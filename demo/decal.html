@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<title>Decal</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			*{ box-sizing: border-box; margin: 0; padding: 0 }
+			body {
+				color: #ffffff;
+				font-family: tahoma;
+				font-size:13px;
+				background-color: #222;
+				margin: 0px;
+				overflow: hidden;
+			}
+			p{ position: absolute; left: 10px; top: 10px; opacity: .5; line-height: 1.4em }
+			p:hover{ opacity: 1 }
+			a{ color: white; text-shadow: 0 1px 0 rgba( 0,0,0,.5 ) }
+			#container canvas{ position: absolute; left: 0; top: 0; width: 100%; height: 100%; bottom: 0;}
+		</style>
+	</head>
+	<body>
+
+		<div id="container"></div>
+		<p><b>Decal test</b> | Click/tap and drag to rotate, mouse wheel/pinch to zoom, space to toggle animation.
+		</p>
+
+<script src="js/Three.js"></script>
+<script src="../src/Three.DecalGeometry.js"></script>
+<script src="js/OrbitControls.js"></script>
+
+<script>
+
+'use strict';
+
+var container, renderer, scene, camera, mesh, fov = 45;
+var start = Date.now();
+var mesh, decal, controls, dummy, meshHelper;
+
+var decalMaterial = new THREE.MeshBasicMaterial( { 
+	map: THREE.ImageUtils.loadTexture( 'assets/man.png' ), 
+	transparent: true, 
+	side: THREE.DoubleSide,
+	depthTest: true, 
+	depthWrite: true, 
+	polygonOffset: true,
+	polygonOffsetFactor: -4, 
+	shading: THREE.SmoothShading
+});
+var decalHelper;
+var p = new THREE.Vector3( 0, 0, 0 );
+var r = new THREE.Vector3( 0, 0, 0 );
+var s = new THREE.Vector3( 10, 10, 10 );
+var animate = true;
+var up = new THREE.Vector3( 0, 1, 0 );
+var line;
+
+window.addEventListener( 'load', init );
+
+function init() {
+
+	container = document.getElementById( 'container' );
+	
+	scene = new THREE.Scene();
+	scene.position = new THREE.Vector3( 0,0,0 );
+
+	camera = new THREE.PerspectiveCamera( fov, window.innerWidth / window.innerHeight, 1, 1000 );
+	camera.position.z = 100;
+	camera.target = new THREE.Vector3( 0, 0, 0 );
+
+	scene.add( camera );
+
+	var m = new THREE.MeshBasicMaterial();
+	var tMesh = new THREE.Mesh( new THREE.TorusKnotGeometry( 10, 2, 100, 20 ), m );
+	var sMesh = new THREE.Mesh( new THREE.IcosahedronGeometry( 10, 2 ), m );
+	var g = new THREE.Geometry();
+	THREE.GeometryUtils.merge( g, tMesh );
+	THREE.GeometryUtils.merge( g, sMesh );
+	mesh = new THREE.Mesh( g, new THREE.MeshBasicMaterial( { wireframe: false, color: 0x272727, transparent: false } ) )
+	scene.add( mesh );
+	
+	meshHelper = new THREE.EdgesHelper( mesh, 0xb7b7b7 );
+	meshHelper.material.linewidth = 2;
+	meshHelper.material.opacity = .1;
+	meshHelper.material.transparent = true;
+
+	scene.add( meshHelper );
+
+	line = new THREE.Line( new THREE.Geometry( ), new THREE.LineBasicMaterial() );
+	line.geometry.vertices.push( new THREE.Vector3( 0, 0, 0 ) );
+	line.geometry.vertices.push( new THREE.Vector3( 0, 0, 0 ) );
+
+	scene.add( line );
+
+	renderer = new THREE.WebGLRenderer( { antialias: true });
+	renderer.setSize( window.innerWidth, window.innerHeight );
+	
+	container.appendChild( renderer.domElement );
+
+	window.addEventListener( 'resize', onWindowResize, false );
+
+	window.addEventListener( 'keydown', function( e ) {
+		if( e.keyCode === 32 ) animate = !animate;
+	} );
+
+
+	controls = new THREE.OrbitControls( camera, renderer.domElement );
+	
+	render();
+	
+}
+
+function onWindowResize() {
+	
+	camera.aspect = window.innerWidth / window.innerHeight;
+	camera.updateProjectionMatrix();
+
+	renderer.setSize( window.innerWidth, window.innerHeight );
+
+}
+
+function render() {
+
+	requestAnimationFrame( render );
+
+	var t = .0005 * Date.now();
+
+	if( animate ) {
+
+		p.set( 10 * Math.sin( t ), 10 * Math.cos( t * 1.1 ), 10 * Math.sin( t * .9 ) );
+		r.set( .1 * Math.sin( .9 *t ), .1 * Math.cos( t * .9 ), .1 * Math.sin( t * .8 ) );
+		s.set( 7 + 5 * Math.sin( .98 * t ), 7 + 5 * Math.cos( t * 1.2 ), 7 + 5 * Math.sin( t * 1 ) );
+
+		var m = new THREE.Matrix4();
+		m.lookAt( p, mesh.position, up );
+		m = m.extractRotation( m );
+
+		dummy = new THREE.Object3D();
+		dummy.rotation.setFromRotationMatrix( m );
+		r.set( dummy.rotation.x, dummy.rotation.y, dummy.rotation.z );
+
+		if( decal ) scene.remove( decal );
+		if( decalHelper ) scene.remove( decalHelper );
+
+		line.geometry.vertices[ 1 ].set( p.x, p.y, p.z );
+		line.geometry.verticesNeedUpdate = true;
+
+		decal = new THREE.Mesh( new THREE.DecalGeometry( mesh, p, r, s ), decalMaterial );
+		scene.add( decal );
+
+		decalHelper = new THREE.Mesh( new THREE.BoxGeometry( s.x, s.y, s.z ), new THREE.MeshBasicMaterial( { wireframe: true }) );
+		decalHelper.rotation.set( r.x, r.y, r.z );
+		decalHelper.position.copy( p );
+		decalHelper.scale.set( 1, 1, 1 );
+		decalHelper.updateMatrixWorld();
+
+		decalHelper = new THREE.EdgesHelper( decalHelper, 0xffffff );
+		decalHelper.material.linewidth = 2;
+
+		scene.add( decalHelper );
+	}
+	
+	renderer.render( scene, camera );
+	
+}
+
+</script>
+
+	</body>
+</html>
