@@ -3,6 +3,8 @@ THREE.DecalGeometry.js
 
 This object creates a decal geometry, intersecting a cube against a THREE.Geometry. Based on this article [How to project decals](http://blog.wolfire.com/2009/06/how-to-project-decals/). It interesects a cube against an arbitrary geometry and clips vertex coordinates and normals.
 
+![Image](https://raw.githubusercontent.com/spite/THREE.DecalGeometry/master/demo/assets/snapshot.jpg)
+
 Demo is here: [Decal Splatter](http://clicktorelease.com/code/decal-splatter).
 
 How to use
