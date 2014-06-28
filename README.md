@@ -20,7 +20,19 @@ Instantiate a geometry passing:
     check // THREE.Vector3 specifying what sides to clip (1-clip, 0-noclip)  
 );</code></pre>
 
-and crete a mesh using that geometry, as usual.
+and create a mesh using that geometry, as usual:
+
+<pre><code>var mesh = new THREE.Mesh( decalGeometry, decalMaterial );</pre></code>
+
+The decal material can be any material, just make sure to have this attributes enabled:
+
+<pre><code>var decalMaterial = new THREE.MeshNormalMaterial( {  
+    transparent: true, 
+	depthTest: true,   
+	depthWrite: false,   
+	polygonOffset: true,  
+	polygonOffsetFactor: -4,   
+});</pre></code>
 
 License
 -------
