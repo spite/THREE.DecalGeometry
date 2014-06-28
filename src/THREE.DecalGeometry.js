@@ -17,7 +17,8 @@ THREE.DecalGeometry = function( mesh, position, rotation, dimensions, check ) {
 
 	THREE.Geometry.call( this );
 
-	this.check = check || new THREE.Vector3( 1, 1, 1 );
+	if( check === undefined ) check = null;
+	check = check || new THREE.Vector3( 1, 1, 1 );
 
 	this.uvs = [];
 
