@@ -453,6 +453,7 @@ THREE.OrbitControls = function ( object, domElement ) {
 
 		scope.update();
 		scope.dispatchEvent( startEvent );
+		scope.dispatchEvent( changeEvent );
 		scope.dispatchEvent( endEvent );
 
 	}
