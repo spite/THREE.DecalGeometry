@@ -1,34 +1,38 @@
 <!doctype html>
 <html lang="en">
 	<head>
-		<title>Decal</title>
+		<title>Decal Splatter</title>
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
 		<style>
 			*{ box-sizing: border-box; margin: 0; padding: 0 }
 			body {
-				color: #ffffff;
+				color: #888;
 				font-family: tahoma;
 				font-size:13px;
 				background-color: #222;
 				margin: 0px;
 				overflow: hidden;
+				text-shadow: 0 1px 0 rgba( 0,0,0,.5 )
 			}
-			p{ position: absolute; left: 10px; top: 10px; opacity: .5; line-height: 1.4em }
-			p:hover{ opacity: 1 }
-			a{ color: white; text-shadow: 0 1px 0 rgba( 0,0,0,.5 ) }
+			.intro{ position: absolute; left: 10px; top: 10px; line-height: 1.4em }
+			a{ color: inherit }
 			#container canvas{ position: absolute; left: 0; top: 0; width: 100%; height: 100%; bottom: 0;}
+			b{ color: #aaa;}
 		</style>
 	</head>
 	<body>
 
 		<div id="container"></div>
-		<p><b>Decal test</b> | Click and drag to rotate, mouse wheel to zoom, E to shoot paint.
-		</p>
+		<div class="intro">
+			<p><b>Decal Splatter</b> | Click or tap and drag to rotate, mouse wheel or pinch to zoom, click or tap to shoot paint.</p>
+			<p>Find the code here: <b><a href="https://github.com/spite/THREE.DecalGeometry" >THREE.DecalGeometry on GitHub</a></b>.</p>
+		</div>
 
 <script src="js/Three.js"></script>
 <script src="js/OrbitControls.js"></script>
-<script src="../src/Three.Decal.js"></script>
+<script src="../src/THREE.DecalGeometry.js"></script>
+<script src="js/dat.gui.min.js"></script>
 
 <script>
 
@@ -63,6 +67,7 @@ var decalMaterial = new THREE.MeshPhongMaterial( {
 	wireframe: false 
 });
 
+var decals = [];
 var decalHelper, mouseHelper;
 var p = new THREE.Vector3( 0, 0, 0 );
 var r = new THREE.Vector3( 0, 0, 0 );
@@ -70,7 +75,15 @@ var s = new THREE.Vector3( 10, 10, 10 );
 var up = new THREE.Vector3( 0, 1, 0 );
 var check = new THREE.Vector3( 1, 1, 1 );
 
-var shootMode = 1;
+var params = {
+	projection: 'normal',
+	minScale: 10,
+	maxScale: 30,
+	rotate: true,
+	clear: function() {
+		removeDecals();
+	}
+};
 
 window.addEventListener( 'load', init );
 
@@ -114,7 +127,7 @@ function init() {
 	spotLight.position.set( 100, 50, 100 );
 	scene.add( spotLight );
 
-	line = new THREE.Line( new THREE.Geometry( ), new THREE.LineBasicMaterial() );
+	line = new THREE.Line( new THREE.Geometry( ), new THREE.LineBasicMaterial( { linewidth: 4 }) );
 	line.geometry.vertices.push( new THREE.Vector3( 0, 0, 0 ) );
 	line.geometry.vertices.push( new THREE.Vector3( 0, 0, 0 ) );
 	scene.add( line );
@@ -130,10 +143,19 @@ function init() {
 
 	window.addEventListener( 'resize', onWindowResize, false );
 
-	window.addEventListener( 'keydown', function( e ) {
-		if( e.keyCode === 69 ) {
-			shoot();
-		}
+	var moved = false;
+
+	controls.addEventListener( 'change', function() {
+		moved = true;
+	} );
+
+	controls.addEventListener( 'start', function() {
+		moved = false;
+	} );
+
+	controls.addEventListener( 'end', function() {
+		checkIntersection();
+		if( !moved ) shoot();
 	} );
 
     window.addEventListener( 'mousemove', onTouchMove );
@@ -152,7 +174,13 @@ function init() {
 		mouse.x = ( x / window.innerWidth ) * 2 - 1;
 		mouse.y = - ( y / window.innerHeight ) * 2 + 1;
 
-		mouseVector.set( mouse.x, mouse.y, 1 );
+		checkIntersection();
+
+    }
+
+    function checkIntersection() {
+
+    	mouseVector.set( mouse.x, mouse.y, 1 );
 		projector.unprojectVector( mouseVector, camera );
 
 		raycaster.set( camera.position, mouseVector.sub( camera.position ).normalize() );
@@ -184,6 +212,15 @@ function init() {
 
     }
 	
+	var gui = new dat.GUI();
+
+	gui.add( params, 'projection', { 'From cam to mesh': 'camera', 'Normal to mesh': 'normal' } );
+	gui.add( params, 'minScale', 1, 30 );
+	gui.add( params, 'maxScale', 1, 30 );
+	gui.add( params, 'rotate' );
+	gui.add( params, 'clear' );
+	gui.open();
+
 	onWindowResize();
 	render();
 	
@@ -223,7 +260,7 @@ function loadLeePerrySmith( callback ) {
 
 function shoot() {
 
-	if( shootMode == 1 ) {
+	if( params.projection == 'camera' ) {
 
 		var dir = camera.target.clone();
 		dir.sub( camera.position );
@@ -238,24 +275,21 @@ function shoot() {
 		m.lookAt( p, c, up );
 		m = m.extractRotation( m );
 
-		var scale = 10 + Math.random() * 20;
-		s.set( scale, scale, scale );
-
 		dummy = new THREE.Object3D();
 		dummy.rotation.setFromRotationMatrix( m );
 		r.set( dummy.rotation.x, dummy.rotation.y, dummy.rotation.z );
-		r.z = Math.random() * 2 * Math.PI;
 
 	} else {
 
 		p = intersection.point;
 		r.copy( mouseHelper.rotation );
-		r.z = Math.random() * 2 * Math.PI;
-
-		var scale = 10 + Math.random() * 20;
-		s.set( scale, scale, scale );
 
 	}
+
+	var scale = params.minScale + Math.random() * ( params.maxScale - params.minScale );
+	s.set( scale, scale, scale );
+
+	if( params.rotate) r.z = Math.random() * 2 * Math.PI;
 
 	/*var dResult = createDecal( 
 		mesh, 
@@ -273,13 +307,44 @@ function shoot() {
 	h.material.linewidth = 2;
 	helperScene.add( h );*/
 
-	scene.add( new THREE.Mesh( new THREE.DecalGeometry( mesh, p, r, s, check ), decalMaterial ) );
+	var m = new THREE.Mesh( new THREE.DecalGeometry( mesh, p, r, s, check ), decalMaterial );
+	decals.push( m );
+	scene.add( m );
 
 	//renderHelpers = true;
 
 	/*line.geometry.vertices[ 0 ].set( p.x, p.y, p.z );
 	line.geometry.vertices[ 1 ].set( c.x, c.y, c.z );
 	line.geometry.verticesNeedUpdate = true;*/
+
+}
+
+function removeDecals() {
+
+	decals.forEach( function( d ) {
+		scene.remove( d );
+		d = null;
+	} );
+	decals = [];
+
+};
+
+function mergeDecals() {
+
+	var g = new THREE.Geometry();
+
+	decals.forEach( function( d ) {
+
+		THREE.GeometryUtils.merge( g, d.geometry );
+
+	} );
+
+	var m = new THREE.Mesh( g, decalMaterial );
+	scene.add( m );
+
+	removeDecals();
+
+	decals.push( m );
 
 }
 
