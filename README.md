@@ -42,5 +42,6 @@ License
 MIT licensed
 
 Copyright (C) 2014 Jaume Sanchez Elias http://twitter.com/thespite
+Lee Perry Smith's head model and textures by [Infinite Realities](http://www.ir-ltd.net/)
 
 http://www.clicktorelease.com
