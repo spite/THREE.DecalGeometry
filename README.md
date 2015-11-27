@@ -15,7 +15,7 @@ Include the library:
 
 Instantiate a geometry passing:
 <pre><code>var decalGeometry = new THREE.DecalGeometry(  
-    meshToIntersect, // it has to be a THREE.Geometry   
+    meshToIntersect, // it has to be a THREE.Mesh
     position, // THREE.Vector3 in world coordinates  
     direction, // THREE.Vector3 specifying the orientation of the decal  
     dimensions, // THREE.Vector3 specifying the size of the decal box  
