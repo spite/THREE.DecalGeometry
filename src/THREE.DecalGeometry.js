@@ -231,7 +231,7 @@ THREE.DecalGeometry = function( mesh, position, rotation, dimensions, check ) {
 
 			if( vertices.length === 0 ) continue;
 
-			finalVertices = finalVertices.concat( vertices );
+			Array.prototype.push.apply(finalVertices, vertices);
 
 	    }
 
