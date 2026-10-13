@@ -1,170 +1,361 @@
 <!doctype html>
 <html lang="en">
 	<head>
-		<title>Decal</title>
+		<title>Decal Geometry - The box and what it cuts</title>
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/guspira@0.1.1/dist/guspira.min.css">
 		<style>
 			*{ box-sizing: border-box; margin: 0; padding: 0 }
 			body {
-				color: #ffffff;
-				font-family: tahoma;
-				font-size:13px;
+				color: #888;
+				font-family: tahoma, sans-serif;
+				font-size: 13px;
 				background-color: #222;
-				margin: 0px;
 				overflow: hidden;
+				text-shadow: 0 1px 0 rgba( 0,0,0,.5 )
 			}
-			p{ position: absolute; left: 10px; top: 10px; opacity: .5; line-height: 1.4em }
-			p:hover{ opacity: 1 }
-			a{ color: white; text-shadow: 0 1px 0 rgba( 0,0,0,.5 ) }
-			#container canvas{ position: absolute; left: 0; top: 0; width: 100%; height: 100%; bottom: 0;}
+			.intro{ position: absolute; left: 10px; top: 10px; right: 320px; line-height: 1.4em; pointer-events: none; }
+			.intro a{ pointer-events: auto; }
+			a{ color: inherit }
+			#container canvas{ position: absolute; left: 0; top: 0; width: 100%; height: 100%; bottom: 0; display: block; }
+			b{ color: #aaa;}
+			#gui-container{ position: absolute; right: 0; top: 0; width: 300px; max-height: 100%; overflow: auto; text-shadow: none; }
 		</style>
+		<script type="importmap">
+		{
+			"imports": {
+				"three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+				"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+			}
+		}
+		</script>
 	</head>
 	<body>
 
 		<div id="container"></div>
-		<p><b>Decal test</b> | Click/tap and drag to rotate, mouse wheel/pinch to zoom, space to toggle animation.
-		</p>
+		<div id="gui-container"></div>
+		<div class="intro">
+			<p><b>The box and what it cuts</b> | The decal is what the mesh has inside of the box, made again on every frame. Drag the arrows to move the box, or its handles to turn and scale it. Drag anywhere else to look around. Space stops the box, W, E and R change its handles, S stamps a decal.</p>
+			<p>Find the code here: <b><a href="https://github.com/spite/THREE.DecalGeometry" >THREE.DecalGeometry on GitHub</a></b> | <a href="splatter.html">Decal Splatter</a></p>
+		</div>
 
-<script src="js/Three.js"></script>
-<script src="../src/Three.DecalGeometry.js"></script>
-<script src="js/OrbitControls.js"></script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { GUI, signal, effect } from 'https://cdn.jsdelivr.net/npm/guspira@0.1.1/dist/guspira.min.js';
+import { DecalGeometry } from '../src/THREE.DecalGeometry.js';
 
-<script>
+const container = document.getElementById( 'container' );
 
-'use strict';
+const scene = new THREE.Scene();
 
-var container, renderer, scene, camera, mesh, fov = 45;
-var start = Date.now();
-var mesh, decal, controls, dummy, meshHelper;
+const camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 1000 );
+camera.position.set( 20, 12, 50 );
 
-var decalMaterial = new THREE.MeshBasicMaterial( { 
-	map: THREE.ImageUtils.loadTexture( 'assets/man.png' ), 
-	transparent: true, 
-	side: THREE.DoubleSide,
-	depthTest: true, 
-	depthWrite: true, 
-	polygonOffset: true,
-	polygonOffsetFactor: -4, 
-	shading: THREE.SmoothShading
-});
-var decalHelper;
-var p = new THREE.Vector3( 0, 0, 0 );
-var r = new THREE.Vector3( 0, 0, 0 );
-var s = new THREE.Vector3( 10, 10, 10 );
-var animate = true;
-var up = new THREE.Vector3( 0, 1, 0 );
-var line;
+const renderer = new THREE.WebGLRenderer( { antialias: true } );
+renderer.setPixelRatio( window.devicePixelRatio );
+renderer.setSize( window.innerWidth, window.innerHeight );
+container.appendChild( renderer.domElement );
 
-window.addEventListener( 'load', init );
+const orbit = new OrbitControls( camera, renderer.domElement );
 
-function init() {
+scene.add( new THREE.HemisphereLight( 0xffffff, 0x333333, 1.2 ) );
 
-	container = document.getElementById( 'container' );
-	
-	scene = new THREE.Scene();
-	scene.position = new THREE.Vector3( 0,0,0 );
+const sun = new THREE.DirectionalLight( 0xffffff, 2 );
+sun.position.set( 3, 5, 4 );
+scene.add( sun );
 
-	camera = new THREE.PerspectiveCamera( fov, window.innerWidth / window.innerHeight, 1, 1000 );
-	camera.position.z = 100;
-	camera.target = new THREE.Vector3( 0, 0, 0 );
+// ---- the meshes to cut. They are in a group that can turn
 
-	scene.add( camera );
+const target = new THREE.Group();
+scene.add( target );
 
-	var m = new THREE.MeshBasicMaterial();
-	var tMesh = new THREE.Mesh( new THREE.TorusKnotGeometry( 10, 2, 100, 20 ), m );
-	var sMesh = new THREE.Mesh( new THREE.IcosahedronGeometry( 10, 2 ), m );
-	var g = new THREE.Geometry();
-	THREE.GeometryUtils.merge( g, tMesh );
-	THREE.GeometryUtils.merge( g, sMesh );
-	mesh = new THREE.Mesh( g, new THREE.MeshBasicMaterial( { wireframe: false, color: 0x272727, transparent: false } ) )
-	scene.add( mesh );
-	
-	meshHelper = new THREE.EdgesHelper( mesh, 0xb7b7b7 );
-	meshHelper.material.linewidth = 2;
-	meshHelper.material.opacity = .1;
-	meshHelper.material.transparent = true;
+const grey = { color: 0x3a3a3a, roughness: .7 };
 
-	scene.add( meshHelper );
+// a knot and a ball, as one mesh
+const knot = new THREE.Mesh(
+	mergeGeometries( [ new THREE.TorusKnotGeometry( 10, 2, 160, 24 ).toNonIndexed(), new THREE.IcosahedronGeometry( 10, 8 ) ] ),
+	new THREE.MeshStandardMaterial( grey )
+);
 
-	line = new THREE.Line( new THREE.Geometry( ), new THREE.LineBasicMaterial() );
-	line.geometry.vertices.push( new THREE.Vector3( 0, 0, 0 ) );
-	line.geometry.vertices.push( new THREE.Vector3( 0, 0, 0 ) );
+// a ball that its morph turns into something with bumps
+const morph = new THREE.Mesh( new THREE.IcosahedronGeometry( 11, 24 ), new THREE.MeshStandardMaterial( { ...grey, flatShading: true } ) );
 
-	scene.add( line );
+{
 
-	renderer = new THREE.WebGLRenderer( { antialias: true });
-	renderer.setSize( window.innerWidth, window.innerHeight );
-	
-	container.appendChild( renderer.domElement );
+	const from = morph.geometry.attributes.position;
+	const to = [];
+	const v = new THREE.Vector3();
 
-	window.addEventListener( 'resize', onWindowResize, false );
+	for ( let i = 0; i < from.count; i ++ ) {
 
-	window.addEventListener( 'keydown', function( e ) {
-		if( e.keyCode === 32 ) animate = !animate;
-	} );
+		v.fromBufferAttribute( from, i );
+		v.multiplyScalar( 1 + .22 * Math.sin( v.x * .7 ) * Math.sin( v.y * .7 ) * Math.sin( v.z * .7 ) );
+		to.push( v.x, v.y, v.z );
 
+	}
 
-	controls = new THREE.OrbitControls( camera, renderer.domElement );
-	
-	render();
-	
+	morph.geometry.morphAttributes.position = [ new THREE.Float32BufferAttribute( to, 3 ) ];
+	morph.updateMorphTargets();
+
 }
 
-function onWindowResize() {
-	
+// a tube that its bones bend
+const bones = [];
+const tube = ( function () {
+
+	const segmentHeight = 7, segmentCount = 4, height = segmentHeight * segmentCount;
+	const geometry = new THREE.CylinderGeometry( 5, 5, height, 48, segmentCount * 8, false );
+	const position = geometry.attributes.position;
+	const skinIndices = [], skinWeights = [];
+
+	for ( let i = 0; i < position.count; i ++ ) {
+
+		const y = position.getY( i ) + height / 2;
+		const bone = Math.min( Math.floor( y / segmentHeight ), segmentCount - 1 );
+		const weight = ( y - bone * segmentHeight ) / segmentHeight;
+
+		skinIndices.push( bone, bone + 1, 0, 0 );
+		skinWeights.push( 1 - weight, weight, 0, 0 );
+
+	}
+
+	geometry.setAttribute( 'skinIndex', new THREE.Uint16BufferAttribute( skinIndices, 4 ) );
+	geometry.setAttribute( 'skinWeight', new THREE.Float32BufferAttribute( skinWeights, 4 ) );
+
+	for ( let i = 0; i <= segmentCount; i ++ ) {
+
+		const bone = new THREE.Bone();
+		bone.position.y = i === 0 ? - height / 2 : segmentHeight;
+		if ( i > 0 ) bones[ i - 1 ].add( bone );
+		bones.push( bone );
+
+	}
+
+	const mesh = new THREE.SkinnedMesh( geometry, new THREE.MeshStandardMaterial( grey ) );
+	mesh.add( bones[ 0 ] );
+	mesh.bind( new THREE.Skeleton( bones ) );
+
+	return mesh;
+
+} )();
+
+const meshes = { knot, morph, tube };
+
+for ( const mesh of Object.values( meshes ) ) target.add( mesh );
+
+// ---- the box, and the decal of what it has inside
+
+const loader = new THREE.TextureLoader();
+const maps = {};
+
+for ( const [ name, file ] of [ [ 'grid', 'pattern.jpg' ], [ 'sign', 'man.png' ] ] ) {
+
+	maps[ name ] = loader.load( 'assets/' + file );
+	maps[ name ].colorSpace = THREE.SRGBColorSpace;
+
+}
+
+const decalMaterial = new THREE.MeshBasicMaterial( {
+	map: maps.grid,
+	transparent: true,
+	side: THREE.DoubleSide,
+	polygonOffset: true,
+	polygonOffsetFactor: - 4
+} );
+
+const decal = new THREE.Mesh( new DecalGeometry(), decalMaterial );
+scene.add( decal );
+
+// its position, rotation and scale are the ones of the box
+const box = new THREE.Object3D();
+box.position.set( 0, 2, 11 );
+box.scale.set( 10, 10, 8 );
+scene.add( box );
+
+const edges = new THREE.LineSegments( new THREE.EdgesGeometry( new THREE.BoxGeometry( 1, 1, 1 ) ), new THREE.LineBasicMaterial( { color: 0xffffff } ) );
+box.add( edges );
+
+// the way the decal looks: the z of the box
+const axis = new THREE.Line( new THREE.BufferGeometry().setFromPoints( [ new THREE.Vector3( 0, 0, .5 ), new THREE.Vector3( 0, 0, 1 ) ] ), new THREE.LineBasicMaterial( { color: 0xffcc00 } ) );
+box.add( axis );
+
+const gizmo = new TransformControls( camera, renderer.domElement );
+gizmo.attach( box );
+gizmo.setSize( .8 );
+scene.add( gizmo.getHelper() );
+
+// ---- the controls
+
+const params = {
+	mesh: signal( 'knot' ),
+	animate: signal( true ),
+	spin: signal( true ),
+	mode: signal( 'translate' ),
+	clipX: signal( true ),
+	clipY: signal( true ),
+	clipZ: signal( true ),
+	maxAngle: signal( 180 ),
+	texture: signal( 'grid' ),
+	wireframe: signal( false ),
+	triangles: signal( 0 ),
+	time: signal( 0 )
+};
+
+const gui = new GUI( 'Decal', document.getElementById( 'gui-container' ) );
+gui.addSelect( 'mesh', params.mesh, [ [ 'knot', 'Knot and ball' ], [ 'morph', 'Morphing ball' ], [ 'tube', 'Bending tube, with bones' ] ] );
+gui.addCheckbox( 'move the box', params.animate );
+gui.addCheckbox( 'turn the mesh', params.spin );
+gui.addSegmented( 'handles', params.mode, [ [ 'translate', 'move' ], [ 'rotate', 'turn' ], [ 'scale', 'size' ] ] );
+gui.addSeparator();
+gui.addLabel( 'Options of the decal' );
+gui.addCheckbox( 'clip x', params.clipX );
+gui.addCheckbox( 'clip y', params.clipY );
+gui.addCheckbox( 'clip z', params.clipZ );
+gui.addSlider( 'maxAngle', params.maxAngle, 0, 180, 1 );
+gui.addSeparator();
+gui.addSelect( 'texture', params.texture, [ [ 'grid', 'Grid' ], [ 'sign', 'Sign' ] ] );
+gui.addCheckbox( 'wireframe', params.wireframe );
+gui.addSeparator();
+gui.addLabel( 'Decals that stay' );
+gui.addButtons( null, [ { label: 'stamp', onClick: stamp }, { label: 'clear', onClick: clearStamps } ] );
+gui.addText( 'A stamp is added to the mesh and goes where it goes. On the meshes that change shape it keeps the shape it was cut with.' );
+gui.addSeparator();
+gui.addMonitor( 'triangles', params.triangles, { format: v => String( v ) } );
+gui.addMonitor( 'ms per decal', params.time, { format: v => v.toFixed( 2 ) } );
+
+effect( () => { for ( const name in meshes ) meshes[ name ].visible = name === params.mesh(); } );
+effect( () => gizmo.setMode( params.mode() ) );
+effect( () => { decalMaterial.map = maps[ params.texture() ]; } );
+effect( () => { decalMaterial.wireframe = params.wireframe(); } );
+
+// the box in the hand stops the one that moves by itself
+gizmo.addEventListener( 'dragging-changed', function ( event ) {
+
+	orbit.enabled = ! event.value;
+	if ( event.value ) params.animate.set( false );
+
+} );
+
+window.addEventListener( 'keydown', function ( e ) {
+
+	if ( e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement ) return;
+
+	if ( e.code === 'Space' ) params.animate.set( ! params.animate() );
+	if ( e.code === 'KeyW' ) params.mode.set( 'translate' );
+	if ( e.code === 'KeyE' ) params.mode.set( 'rotate' );
+	if ( e.code === 'KeyR' ) params.mode.set( 'scale' );
+	if ( e.code === 'KeyS' ) stamp();
+
+} );
+
+const options = () => ( {
+	check: new THREE.Vector3( Number( params.clipX() ), Number( params.clipY() ), Number( params.clipZ() ) ),
+	maxAngle: params.maxAngle()
+} );
+
+// the size of the box, that the handles can leave at zero or below it
+const dimensions = new THREE.Vector3();
+const size = () => dimensions.set( Math.max( .1, Math.abs( box.scale.x ) ), Math.max( .1, Math.abs( box.scale.y ) ), Math.max( .1, Math.abs( box.scale.z ) ) );
+
+// ---- decals that stay: in the coordinates of the mesh, and added to it, so they go where it goes
+
+let stamps = [];
+let hue = 0;
+
+function stamp() {
+
+	const mesh = meshes[ params.mesh() ];
+	const geometry = new DecalGeometry( mesh, box.position, box.rotation, size(), { ...options(), local: true } );
+
+	if ( geometry.drawRange.count === 0 ) return;
+
+	const material = decalMaterial.clone();
+	material.color.setHSL( hue, .8, .65 );
+	hue = ( hue + .13 ) % 1;
+
+	const stamped = new THREE.Mesh( geometry, material );
+	mesh.add( stamped );
+	stamps.push( stamped );
+
+}
+
+function clearStamps() {
+
+	for ( const s of stamps ) {
+
+		s.removeFromParent();
+		s.geometry.dispose();
+		s.material.dispose();
+
+	}
+
+	stamps = [];
+
+}
+
+effect( () => { const map = maps[ params.texture() ], wireframe = params.wireframe(); for ( const s of stamps ) { s.material.map = map; s.material.wireframe = wireframe; } } );
+
+window.addEventListener( 'resize', function () {
+
 	camera.aspect = window.innerWidth / window.innerHeight;
 	camera.updateProjectionMatrix();
 
 	renderer.setSize( window.innerWidth, window.innerHeight );
 
-}
+} );
+
+const p = new THREE.Vector3();
+let last = performance.now();
+let smoothed = 0;
 
 function render() {
 
 	requestAnimationFrame( render );
 
-	var t = .0005 * Date.now();
+	const now = performance.now();
+	const dt = Math.min( .1, ( now - last ) / 1000 );
+	const t = .0005 * now;
+	last = now;
 
-	if( animate ) {
+	if ( params.spin() ) target.rotation.y += .3 * dt;
 
+	// the ball changes, and the tube bends
+	morph.morphTargetInfluences[ 0 ] = .5 + .5 * Math.sin( t * 3 );
+	bones.forEach( ( bone, i ) => { if ( i > 0 ) bone.rotation.z = .35 * Math.sin( t * 2.5 + i * .4 ); } );
+
+	if ( params.animate() ) {
+
+		// around the mesh, looking away from its centre
 		p.set( 10 * Math.sin( t ), 10 * Math.cos( t * 1.1 ), 10 * Math.sin( t * .9 ) );
-		r.set( .1 * Math.sin( .9 *t ), .1 * Math.cos( t * .9 ), .1 * Math.sin( t * .8 ) );
-		s.set( 7 + 5 * Math.sin( .98 * t ), 7 + 5 * Math.cos( t * 1.2 ), 7 + 5 * Math.sin( t * 1 ) );
 
-		var m = new THREE.Matrix4();
-		m.lookAt( p, mesh.position, up );
-		m = m.extractRotation( m );
+		box.position.copy( p );
+		box.lookAt( p.clone().multiplyScalar( 2 ) );
+		box.scale.set( 7 + 5 * Math.sin( .98 * t ), 7 + 5 * Math.cos( t * 1.2 ), 7 + 5 * Math.sin( t ) );
 
-		dummy = new THREE.Object3D();
-		dummy.rotation.setFromRotationMatrix( m );
-		r.set( dummy.rotation.x, dummy.rotation.y, dummy.rotation.z );
-
-		if( decal ) scene.remove( decal );
-		if( decalHelper ) scene.remove( decalHelper );
-
-		line.geometry.vertices[ 1 ].set( p.x, p.y, p.z );
-		line.geometry.verticesNeedUpdate = true;
-
-		decal = new THREE.Mesh( new THREE.DecalGeometry( mesh, p, r, s ), decalMaterial );
-		scene.add( decal );
-
-		decalHelper = new THREE.Mesh( new THREE.BoxGeometry( s.x, s.y, s.z ), new THREE.MeshBasicMaterial( { wireframe: true }) );
-		decalHelper.rotation.set( r.x, r.y, r.z );
-		decalHelper.position.copy( p );
-		decalHelper.scale.set( 1, 1, 1 );
-		decalHelper.updateMatrixWorld();
-
-		decalHelper = new THREE.EdgesHelper( decalHelper, 0xffffff );
-		decalHelper.material.linewidth = 2;
-
-		scene.add( decalHelper );
 	}
-	
+
+	// the mesh where it is now, bones included, before it's cut
+	target.updateMatrixWorld( true );
+	tube.skeleton.update();
+
+	const before = performance.now();
+
+	decal.geometry.update( meshes[ params.mesh() ], box.position, box.rotation, size(), options() );
+
+	smoothed += ( performance.now() - before - smoothed ) * .1;
+
+	params.triangles.set( decal.geometry.drawRange.count / 3 );
+	params.time.set( Math.round( smoothed * 100 ) / 100 );
+
 	renderer.render( scene, camera );
-	
+
 }
 
+render();
 </script>
 
 	</body>
