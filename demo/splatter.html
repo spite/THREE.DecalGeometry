@@ -45,7 +45,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { GUI, signal, effect } from 'https://cdn.jsdelivr.net/npm/guspira@0.1.1/dist/guspira.min.js';
-import { DecalGeometry } from '../src/THREE.DecalGeometry.js';
+import { DecalBatch, prepareAsync } from '../src/THREE.DecalGeometry.js';
 
 // the colors as three.js used them when this was made, to look as it did
 THREE.ColorManagement.enabled = false;
@@ -61,9 +61,11 @@ container.appendChild( renderer.domElement );
 const scene = new THREE.Scene();
 
 const camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 1000 );
-camera.position.z = 100;
+camera.position.set( 0, - 8, 125 );
 
 const controls = new OrbitControls( camera, renderer.domElement );
+controls.target.set( 0, - 8, 0 );
+controls.update();
 
 // the lights of the original, with what got to the head from where each one was
 scene.add( new THREE.AmbientLight( 0x111111, Math.PI ) );
@@ -83,18 +85,112 @@ scene.add( white );
 const loader = new THREE.TextureLoader();
 const texture = name => loader.load( 'assets/' + name );
 
+// four splats in one texture: the one of the original, and three that are made here. Each decal takes one
+const CELL = 512;
+const atlas = document.createElement( 'canvas' );
+atlas.width = atlas.height = CELL * 2;
+
+const splats = new THREE.CanvasTexture( atlas );
+splats.anisotropy = 4;
+
+const cells = [ [ 0, .5, .5, 1 ], [ .5, .5, 1, 1 ], [ 0, 0, .5, .5 ], [ .5, 0, 1, .5 ] ];
+
+// blobs that add up, and are cut where they are half of the way: they join as paint does
+function drawSplat( x, y ) {
+
+	const canvas = document.createElement( 'canvas' );
+	canvas.width = canvas.height = CELL;
+
+	const ctx = canvas.getContext( '2d' );
+	ctx.globalCompositeOperation = 'lighter';
+
+	const blob = function ( bx, by, r ) {
+
+		const gradient = ctx.createRadialGradient( bx, by, 0, bx, by, r * 2 );
+		gradient.addColorStop( 0, 'rgba(255,255,255,1)' );
+		gradient.addColorStop( 1, 'rgba(255,255,255,0)' );
+		ctx.fillStyle = gradient;
+		ctx.fillRect( bx - r * 2, by - r * 2, r * 4, r * 4 );
+
+	};
+
+	const c = CELL / 2;
+
+	blob( c, c, CELL * ( .13 + .05 * Math.random() ) );
+
+	// drops that leave the middle, smaller the further they get
+	for ( let i = 0; i < 16; i ++ ) {
+
+		const angle = Math.random() * Math.PI * 2;
+		const reach = .12 + .26 * Math.random();
+		const steps = 2 + Math.floor( Math.random() * 5 );
+
+		for ( let j = 0; j < steps; j ++ ) {
+
+			const d = CELL * reach * ( 1 - j / ( steps + 2 ) );
+
+			blob( c + Math.cos( angle ) * d, c + Math.sin( angle ) * d, CELL * ( .012 + .035 * Math.random() * ( 1 - reach ) ) );
+
+		}
+
+	}
+
+	const image = ctx.getImageData( 0, 0, CELL, CELL );
+	const data = image.data;
+
+	for ( let i = 0; i < data.length; i += 4 ) {
+
+		const a = Math.min( 1, Math.max( 0, ( data[ i + 3 ] / 255 - .45 ) / .1 ) );
+
+		data[ i ] = data[ i + 1 ] = data[ i + 2 ] = 255;
+		data[ i + 3 ] = 255 * a * a * ( 3 - 2 * a );
+
+	}
+
+	ctx.putImageData( image, 0, 0 );
+	atlas.getContext( '2d' ).drawImage( canvas, x, y );
+
+}
+
+drawSplat( CELL, 0 );
+drawSplat( 0, CELL );
+drawSplat( CELL, CELL );
+
+new THREE.ImageLoader().load( 'assets/white-splatter.png', function ( image ) {
+
+	atlas.getContext( '2d' ).drawImage( image, 0, 0, CELL, CELL );
+	splats.needsUpdate = true;
+
+} );
+
 const decalMaterial = new THREE.MeshPhongMaterial( {
 	specular: 0xffffff,
 	shininess: 10,
-	map: texture( 'white-splatter.png' ),
+	map: splats,
 	normalMap: texture( 'wrinkle-normal.jpg' ),
 	normalScale: new THREE.Vector2( .15, .15 ),
 	transparent: true,
 	depthTest: true,
 	depthWrite: false,
 	polygonOffset: true,
-	polygonOffsetFactor: - 4
+	polygonOffsetFactor: - 4,
+	vertexColors: true
 } );
+
+// every splat goes into one geometry, with its color in its vertices: they are all drawn at once.
+// It has a limit, and when it's full the oldest splats make room for the new ones
+const MAX_TRIANGLES = 60000;
+const batch = new DecalBatch( { tangents: true, maxVertices: MAX_TRIANGLES * 3 } );
+
+const decals = new THREE.Mesh( batch, decalMaterial );
+decals.frustumCulled = false;
+scene.add( decals );
+
+// the triangles of the splats, to look at what was cut
+const wires = new THREE.Mesh( batch, new THREE.MeshBasicMaterial( { vertexColors: true, wireframe: true, polygonOffset: true, polygonOffsetFactor: - 4 } ) );
+wires.frustumCulled = false;
+wires.visible = false;
+scene.add( wires );
 
 const params = {
 	projection: signal( 'normal' ),
@@ -102,7 +198,11 @@ const params = {
 	maxScale: signal( 30 ),
 	maxAngle: signal( 90 ),
 	rotate: signal( true ),
-	wireframe: signal( false )
+	fade: signal( true ),
+	lifetime: signal( 0 ),
+	wireframe: signal( false ),
+	splats: signal( 0 ),
+	triangles: signal( 0 )
 };
 
 const gui = new GUI( 'Decals', document.getElementById( 'gui-container' ) );
@@ -111,16 +211,28 @@ gui.addSlider( 'minScale', params.minScale, 1, 30, .1 );
 gui.addSlider( 'maxScale', params.maxScale, 1, 30, .1 );
 gui.addSlider( 'maxAngle', params.maxAngle, 0, 180, 1 );
 gui.addCheckbox( 'rotate', params.rotate );
+gui.addCheckbox( 'fade the edges', params.fade );
+gui.addSlider( 'lifetime', params.lifetime, 0, 30, 1 );
+gui.addText( 'The seconds that a splat lasts before it fades away. At 0 they stay.' );
 gui.addCheckbox( 'wireframe', params.wireframe );
 gui.addButton( 'clear', removeDecals );
+gui.addSeparator();
+gui.addMonitor( 'splats', params.splats, { format: v => String( v ) } );
+gui.addMonitor( 'triangles', params.triangles, { format: v => v + ' of ' + MAX_TRIANGLES } );
+gui.addText( 'All of them are one geometry, drawn at once. When it is full, the oldest splats make room for the new ones. A splat goes over everything it reaches, the head and what it stands on.' );
+
+// what the splats are cut from: the head and what it stands on
+const target = new THREE.Group();
+scene.add( target );
 
 let mesh = null;
-let decals = [];
 
 // every splat has the next color of the wheel
 let hue = 0;
+const color = new THREE.Color();
 
-const intersection = { intersects: false, point: new THREE.Vector3(), normal: new THREE.Vector3() };
+// where the pointer is on the mesh, as the raycaster returns it
+let hit = null;
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
@@ -135,7 +247,7 @@ arrow.add(
 arrow.visible = false;
 scene.add( arrow );
 
-const mouseHelper = new THREE.Object3D();
+const helper = new THREE.Object3D();
 
 new GLTFLoader().load( 'assets/LeePerrySmith.glb', function ( gltf ) {
 
@@ -148,13 +260,25 @@ new GLTFLoader().load( 'assets/LeePerrySmith.glb', function ( gltf ) {
 	} );
 
 	mesh.scale.set( 10, 10, 10 );
-	scene.add( mesh );
+	target.add( mesh );
+
+	const bounds = new THREE.Box3().setFromObject( mesh );
+	const plinth = new THREE.Mesh(
+		new THREE.CylinderGeometry( 13, 15, 14, 64, 8 ),
+		new THREE.MeshPhongMaterial( { color: 0x555555, shininess: 10 } )
+	);
+	plinth.position.set( 0, bounds.min.y - 5.5, - 3 );
+	target.add( plinth );
+
+	// the grid that finds the triangles of each mesh is made in a worker, so the first splat doesn't wait for it
+	target.updateMatrixWorld( true );
+	prepareAsync( target );
 
 } );
 
 function checkIntersection() {
 
-	intersection.intersects = false;
+	hit = null;
 
 	// nothing to point at until the pointer is over the mesh
 	arrow.visible = false;
@@ -163,72 +287,54 @@ function checkIntersection() {
 
 	raycaster.setFromCamera( mouse, camera );
 
-	const intersects = raycaster.intersectObject( mesh );
+	hit = raycaster.intersectObject( target, true )[ 0 ] || null;
 
-	if ( intersects.length === 0 ) return;
+	if ( hit === null ) return;
 
-	intersection.point.copy( intersects[ 0 ].point );
-	intersection.normal.copy( intersects[ 0 ].face.normal ).transformDirection( mesh.matrixWorld );
-	intersection.intersects = true;
+	const normal = hit.face.normal.clone().transformDirection( hit.object.matrixWorld );
 
-	const end = intersection.normal.clone().multiplyScalar( 10 ).add( intersection.point );
-
-	mouseHelper.position.copy( intersection.point );
-	mouseHelper.lookAt( end );
-
-	arrow.position.copy( mouseHelper.position );
-	arrow.quaternion.copy( mouseHelper.quaternion );
+	arrow.position.copy( hit.point );
+	arrow.lookAt( normal.multiplyScalar( 10 ).add( hit.point ) );
 	arrow.visible = true;
 
 }
 
 function shoot() {
 
-	if ( ! intersection.intersects ) return;
+	if ( hit === null ) return;
 
-	const rotation = new THREE.Euler();
+	const scale = params.minScale() + Math.random() * ( params.maxScale() - params.minScale() );
+	const angle = params.rotate() ? Math.random() * 2 * Math.PI : 0;
+
+	const options = {
+		maxAngle: params.maxAngle(),
+		fade: params.fade(),
+		color: color.setHSL( hue, 1, .5 ),
+		uvRect: cells[ Math.floor( Math.random() * cells.length ) ]
+	};
 
 	if ( params.projection() === 'camera' ) {
 
 		// the box looks back along the way the camera looks
-		mouseHelper.lookAt( camera.getWorldDirection( new THREE.Vector3() ).multiplyScalar( - 10 ).add( intersection.point ) );
+		helper.quaternion.copy( camera.quaternion );
+		helper.rotateZ( angle );
+
+		batch.add( target, hit.point, helper.rotation, new THREE.Vector3( scale, scale, scale ), options );
+
+	} else {
+
+		// along the way the surface looks where it was hit, over everything that is there
+		batch.addFromIntersection( hit, scale, { ...options, angle, target } );
 
 	}
 
-	rotation.copy( mouseHelper.rotation );
-
-	if ( params.rotate() ) rotation.z = Math.random() * 2 * Math.PI;
-
-	const scale = params.minScale() + Math.random() * ( params.maxScale() - params.minScale() );
-
-	const geometry = new DecalGeometry( mesh, intersection.point, rotation, new THREE.Vector3( scale, scale, scale ), { maxAngle: params.maxAngle() } );
-
-	// the textures are shared, the color is its own
-	const material = decalMaterial.clone();
-	material.color.setHSL( hue, 1, .5 );
 	hue = ( hue + .09 ) % 1;
-
-	// and the triangles of the decal in that color, to look at what was cut
-	const wire = new THREE.MeshBasicMaterial( { color: material.color, wireframe: true, polygonOffset: true, polygonOffsetFactor: - 4 } );
-
-	const decal = new THREE.Mesh( geometry, params.wireframe() ? wire : material );
-	decal.userData = { material, wire };
-	decals.push( decal );
-	scene.add( decal );
 
 }
 
 function removeDecals() {
 
-	decals.forEach( function ( d ) {
-
-		scene.remove( d );
-		d.geometry.dispose();
-		d.userData.material.dispose();
-		d.userData.wire.dispose();
-
-	} );
-	decals = [];
+	batch.clear();
 
 }
 
@@ -245,7 +351,8 @@ effect( function () {
 
 	const wireframe = params.wireframe();
 
-	for ( const d of decals ) d.material = wireframe ? d.userData.wire : d.userData.material;
+	decals.visible = ! wireframe;
+	wires.visible = wireframe;
 
 } );
 
@@ -294,6 +401,14 @@ window.addEventListener( 'resize', function () {
 function render() {
 
 	requestAnimationFrame( render );
+
+	// the splats that are too old fade and go
+	batch.lifetime = params.lifetime() || Infinity;
+	batch.update();
+
+	params.splats.set( batch.decals.length );
+	params.triangles.set( batch.decals.reduce( ( sum, decal ) => sum + decal.count, 0 ) / 3 );
+
 	renderer.render( scene, camera );
 
 }

@@ -1,0 +1,39 @@
+{
+  "name": "three.decal-geometry",
+  "version": "1.0.0",
+  "description": "Decals for three.js: the part of a mesh that is inside a box, with batches, bones, morphs and fading edges",
+  "type": "module",
+  "main": "src/THREE.DecalGeometry.js",
+  "module": "src/THREE.DecalGeometry.js",
+  "types": "src/THREE.DecalGeometry.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/THREE.DecalGeometry.d.ts",
+      "default": "./src/THREE.DecalGeometry.js"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "peerDependencies": {
+    "three": ">=0.152.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spite/THREE.DecalGeometry.git"
+  },
+  "keywords": [
+    "threejs",
+    "three",
+    "decal",
+    "decals",
+    "geometry",
+    "webgl"
+  ],
+  "author": "Jaume Sanchez <the.spite@gmail.com> (https://www.clicktorelease.com)",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/spite/THREE.DecalGeometry/issues"
+  },
+  "homepage": "https://spite.github.io/THREE.DecalGeometry/"
+}

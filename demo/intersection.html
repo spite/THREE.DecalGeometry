@@ -46,7 +46,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GUI, signal, effect } from 'https://cdn.jsdelivr.net/npm/guspira@0.1.1/dist/guspira.min.js';
-import { DecalGeometry } from '../src/THREE.DecalGeometry.js';
+import { DecalGeometry, createDecal } from '../src/THREE.DecalGeometry.js';
 
 const container = document.getElementById( 'container' );
 
@@ -199,9 +199,14 @@ const params = {
 	clipY: signal( true ),
 	clipZ: signal( true ),
 	maxAngle: signal( 180 ),
+	fade: signal( false ),
+	offset: signal( 0 ),
+	indexed: signal( false ),
 	texture: signal( 'grid' ),
+	part: signal( 'all' ),
 	wireframe: signal( false ),
 	triangles: signal( 0 ),
+	vertices: signal( 0 ),
 	time: signal( 0 )
 };
 
@@ -216,21 +221,29 @@ gui.addCheckbox( 'clip x', params.clipX );
 gui.addCheckbox( 'clip y', params.clipY );
 gui.addCheckbox( 'clip z', params.clipZ );
 gui.addSlider( 'maxAngle', params.maxAngle, 0, 180, 1 );
+gui.addCheckbox( 'fade the edges', params.fade );
+gui.addSlider( 'offset', params.offset, 0, 1, .01 );
+gui.addCheckbox( 'indexed', params.indexed );
 gui.addSeparator();
 gui.addSelect( 'texture', params.texture, [ [ 'grid', 'Grid' ], [ 'sign', 'Sign' ] ] );
+gui.addSelect( 'part of it', params.part, [ [ 'all', 'All of it' ], [ 'quarter', 'A quarter' ], [ 'strip', 'A strip' ] ] );
 gui.addCheckbox( 'wireframe', params.wireframe );
 gui.addSeparator();
 gui.addLabel( 'Decals that stay' );
 gui.addButtons( null, [ { label: 'stamp', onClick: stamp }, { label: 'clear', onClick: clearStamps } ] );
-gui.addText( 'A stamp is added to the mesh and goes where it goes. On the meshes that change shape it keeps the shape it was cut with.' );
+gui.addText( 'A stamp is added to the mesh and goes where it goes. On the tube it has its bones, and bends with it. On the ball that morphs it has its morph, and changes with it.' );
 gui.addSeparator();
 gui.addMonitor( 'triangles', params.triangles, { format: v => String( v ) } );
+gui.addMonitor( 'vertices', params.vertices, { format: v => String( v ) } );
 gui.addMonitor( 'ms per decal', params.time, { format: v => v.toFixed( 2 ) } );
 
 effect( () => { for ( const name in meshes ) meshes[ name ].visible = name === params.mesh(); } );
 effect( () => gizmo.setMode( params.mode() ) );
 effect( () => { decalMaterial.map = maps[ params.texture() ]; } );
 effect( () => { decalMaterial.wireframe = params.wireframe(); } );
+
+// the fade is in the colors of the vertices, which the material has to be told to use
+effect( () => { decalMaterial.vertexColors = params.fade(); decalMaterial.needsUpdate = true; } );
 
 // the box in the hand stops the one that moves by itself
 gizmo.addEventListener( 'dragging-changed', function ( event ) {
@@ -252,9 +265,16 @@ window.addEventListener( 'keydown', function ( e ) {
 
 } );
 
+// the part of the texture that the decal shows, as when it's one of many in an atlas
+const parts = { all: [ 0, 0, 1, 1 ], quarter: [ 0, .5, .5, 1 ], strip: [ 0, .375, 1, .625 ] };
+
 const options = () => ( {
 	check: new THREE.Vector3( Number( params.clipX() ), Number( params.clipY() ), Number( params.clipZ() ) ),
-	maxAngle: params.maxAngle()
+	maxAngle: params.maxAngle(),
+	fade: params.fade(),
+	offset: params.offset(),
+	indexed: params.indexed(),
+	uvRect: parts[ params.part() ]
 } );
 
 // the size of the box, that the handles can leave at zero or below it
@@ -269,7 +289,9 @@ let hue = 0;
 function stamp() {
 
 	const mesh = meshes[ params.mesh() ];
-	const geometry = new DecalGeometry( mesh, box.position, box.rotation, size(), { ...options(), local: true } );
+
+	// with the bones and the morphs of the mesh, if it has them, to move as it does
+	const geometry = new DecalGeometry( mesh, box.position, box.rotation, size(), { ...options(), local: true, skin: true, morph: true } );
 
 	if ( geometry.drawRange.count === 0 ) return;
 
@@ -277,9 +299,7 @@ function stamp() {
 	material.color.setHSL( hue, .8, .65 );
 	hue = ( hue + .13 ) % 1;
 
-	const stamped = new THREE.Mesh( geometry, material );
-	mesh.add( stamped );
-	stamps.push( stamped );
+	stamps.push( createDecal( mesh, geometry, material ) );
 
 }
 
@@ -349,6 +369,7 @@ function render() {
 	smoothed += ( performance.now() - before - smoothed ) * .1;
 
 	params.triangles.set( decal.geometry.drawRange.count / 3 );
+	params.vertices.set( decal.geometry._vertices );
 	params.time.set( Math.round( smoothed * 100 ) / 100 );
 
 	renderer.render( scene, camera );

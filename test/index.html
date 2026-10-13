@@ -2,7 +2,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { DecalGeometry as Addon } from 'three/addons/geometries/DecalGeometry.js';
-import { DecalGeometry } from '../src/THREE.DecalGeometry.js';
+import { DecalGeometry, DecalBatch, createDecal, createSkinnedDecal, boxFromIntersection, prepare, prepareAsync } from '../src/THREE.DecalGeometry.js';
 const report = ( name, ok, detail ) => {
 
 	console.log( 'RESULT ' + JSON.stringify( { name, ok, detail } ) );
@@ -137,6 +137,320 @@ try {
 	const t3 = performance.now(); for ( let i = 0; i < 10; i ++ ) reusable.update( big, new THREE.Vector3( 0, 0, 500 ), new THREE.Euler(), new THREE.Vector3( 2, 2, 2 ) );
 	o.msWhenAway = Math.round( ( performance.now() - t3 ) / 10 * 100 ) / 100;
 	report( 'options, reuse and other meshes', Object.entries( o ).every( ( [ k, v ] ) => k.startsWith( 'ms' ) || v === true ), o );
+
+	// ---- the grid, and what the vertices of a decal can have
+	const q = {};
+	const V = ( g, name, i ) => { const a = g.attributes[ name ]; return a.itemSize === 4 ? new THREE.Vector4().fromBufferAttribute( a, i ) : new THREE.Vector3().fromBufferAttribute( a, i ); };
+	const used = g => g.index ? g.attributes.position.count : g.drawRange.count;
+
+	// with the grid and without it, the same decal
+	const dense = new THREE.Mesh( new THREE.TorusKnotGeometry( 10, 3, 300, 40 ) ); dense.rotation.set( .3, .4, .5 ); dense.position.set( 2, 0, 0 ); dense.updateMatrixWorld();
+	const spots = [ [ [ 12, 0, 0 ], [ 0, 1, 0 ], [ 6, 6, 6 ] ], [ [ 0, 9, 3 ], [ 1, 0, .5 ], [ 9, 4, 12 ] ], [ [ - 8, - 4, 0 ], [ .2, 2, 1 ], [ 3, 14, 5 ] ], [ [ 2, 0, 0 ], [ 0, 0, 0 ], [ 40, 40, 40 ] ] ];
+	q.gridIsTheSame = spots.every( ( [ pp, e, s ] ) => { const w = [ new THREE.Vector3( ...pp ), new THREE.Euler( ...e ), new THREE.Vector3( ...s ) ]; const g1 = new DecalGeometry( dense, ...w ), g0 = new DecalGeometry( dense, ...w, { grid: false } ); return g1.drawRange.count > 0 && g1.drawRange.count === g0.drawRange.count && near( area( g1 ), area( g0 ), 1e-6 ); } );
+	dense.geometry.attributes.position.setX( 0, 100 ); dense.geometry.attributes.position.needsUpdate = true; dense.geometry.computeBoundingSphere();
+	const far2 = [ new THREE.Vector3( 100, 0, 0 ).applyMatrix4( dense.matrixWorld ), new THREE.Euler(), new THREE.Vector3( 4, 4, 4 ) ];
+	q.gridFollowsTheGeometry = new DecalGeometry( dense, ...far2 ).drawRange.count === new DecalGeometry( dense, ...far2, { grid: false } ).drawRange.count && new DecalGeometry( dense, ...far2 ).drawRange.count > 0;
+
+	// colors, and the fade at the edges
+	const ball = new THREE.Mesh( new THREE.SphereGeometry( 5, 64, 48 ) );
+	const onTop = [ new THREE.Vector3( 0, 0, 5 ), new THREE.Euler(), new THREE.Vector3( 9, 9, 6 ) ];
+	const plain = new DecalGeometry( ball, ...onTop );
+	const colored = new DecalGeometry( ball, ...onTop, { color: 0xff8000 } );
+	const c0 = V( colored, 'color', 0 );
+	q.color = plain.attributes.color === undefined && colored.attributes.color.itemSize === 4 && near( c0.x, new THREE.Color( 0xff8000 ).r ) && near( c0.y, new THREE.Color( 0xff8000 ).g ) && c0.w === 1;
+	const faded = new DecalGeometry( ball, ...onTop, { fade: true } );
+	let centreAlpha = 0, rimAlpha = 1, sideAlpha = 1, bad = 0;
+	for ( let i = 0; i < used( faded ); i ++ ) { const pos = V( faded, 'position', i ), al = V( faded, 'color', i ).w; if ( al < 0 || al > 1 ) bad ++; if ( Math.hypot( pos.x, pos.y ) < .5 ) centreAlpha = Math.max( centreAlpha, al ); if ( pos.z < 2.05 ) rimAlpha = Math.min( rimAlpha, al ); if ( Math.hypot( pos.x, pos.y ) > 4.3 ) sideAlpha = Math.min( sideAlpha, al ); }
+	q.fade = bad === 0 && near( centreAlpha, 1, 1e-3 ) && rimAlpha < .02 && sideAlpha < .2 && V( faded, 'color', 0 ).x === 1;
+	q.fadeValues = [ centreAlpha, rimAlpha, sideAlpha ].map( v => Math.round( v * 1000 ) / 1000 ).join();
+	const fadedLess = new DecalGeometry( ball, ...onTop, { fade: { angle: 80, depth: 0 } } );
+	let mid = 0, n2 = 0; for ( let i = 0; i < used( fadedLess ); i ++ ) { const pos = V( fadedLess, 'position', i ); if ( Math.abs( Math.hypot( pos.x, pos.y ) - 3.5 ) < .2 ) { mid += V( fadedLess, 'color', i ).w; n2 ++; } }
+	q.fadeOptions = n2 > 0 && near( mid / n2, 1, 1e-3 );
+
+	// away from the surface
+	const lifted = new DecalGeometry( ball, ...onTop, { offset: .25 } );
+	let lo = Infinity, hi2 = 0; for ( let i = 0; i < used( lifted ); i ++ ) { const l = V( lifted, 'position', i ).length(); lo = Math.min( lo, l ); hi2 = Math.max( hi2, l ); }
+	q.offset = near( lo, 5.25, 2e-2 ) && near( hi2, 5.25, 1e-3 );
+	const scaledBall = new THREE.Mesh( ball.geometry ); scaledBall.scale.setScalar( 2 ); scaledBall.updateMatrixWorld();
+	const liftedLocal = new DecalGeometry( scaledBall, new THREE.Vector3( 0, 0, 10 ), new THREE.Euler(), new THREE.Vector3( 6, 6, 6 ), { offset: .5, local: true } );
+	q.offsetInTheWorld = near( V( liftedLocal, 'position', 0 ).length(), 5.25, 2e-2 );
+
+	// tangents along the x of the texture
+	const tg = new DecalGeometry( ball, ...onTop, { tangents: true } );
+	let worstUnit = 0, worstPerp = 0, minAlong = 1, hand = 0;
+	for ( let i = 0; i < used( tg ); i ++ ) { const t4 = V( tg, 'tangent', i ), tv = new THREE.Vector3( t4.x, t4.y, t4.z ), nv = V( tg, 'normal', i ); worstUnit = Math.max( worstUnit, Math.abs( tv.length() - 1 ) ); worstPerp = Math.max( worstPerp, Math.abs( tv.dot( nv ) ) ); minAlong = Math.min( minAlong, tv.x ); if ( nv.clone().cross( tv ).multiplyScalar( t4.w ).y <= 0 ) hand ++; }
+	q.tangents = tg.attributes.tangent.itemSize === 4 && worstUnit < 1e-5 && worstPerp < 1e-5 && minAlong > .4 && hand === 0;
+	// the texture turned over: the other hand
+	const flipped = new DecalGeometry( ball, onTop[ 0 ], new THREE.Euler( 0, 0, Math.PI ), onTop[ 2 ], { tangents: true } );
+	const ft = V( flipped, 'tangent', 0 ), fn = V( flipped, 'normal', 0 );
+	q.tangentsFollowTheBox = ft.x < - .4 && fn.clone().cross( new THREE.Vector3( ft.x, ft.y, ft.z ) ).multiplyScalar( ft.w ).y < 0;
+
+	// the vertices that are shared, once
+	const ix = new DecalGeometry( ball, ...onTop, { indexed: true } );
+	let validIndex = true; for ( let i = 0; i < ix.drawRange.count; i ++ ) if ( ix.index.getX( i ) >= ix._vertices ) validIndex = false;
+	q.indexed = ix.index !== null && ix.drawRange.count === plain.drawRange.count && ix._vertices < plain.drawRange.count * .45 && validIndex && near( area( ix ), area( plain ), 1e-6 ) && near( box( ix ).max.x, box( plain ).max.x );
+	q.indexedSaves = ix._vertices + ' vertices, not ' + plain.drawRange.count;
+	const toggled = new DecalGeometry( ball, ...onTop, { indexed: true } ); toggled.update( ball, ...onTop );
+	q.indexedAndBack = toggled.index === null && near( area( toggled ), area( plain ), 1e-6 ) && toggled.update( ball, ...onTop, { fade: true, tangents: true } ).attributes.tangent !== undefined && toggled.update( ball, ...onTop ).attributes.tangent === undefined;
+	const renderer2 = new THREE.WebGLRenderer(); renderer2.setSize( 100, 100 );
+	const sc = new THREE.Scene(); const cam2 = new THREE.PerspectiveCamera( 50, 1, .1, 100 ); cam2.position.z = 16;
+	sc.add( new THREE.Mesh( ix, new THREE.MeshBasicMaterial( { color: 0xff0000 } ) ) ); renderer2.render( sc, cam2 );
+	const px2 = new Uint8Array( 4 ); renderer2.getContext().readPixels( 50, 50, 1, 1, 6408, 5121, px2 );
+	q.indexedRenders = px2[ 0 ] === 255;
+	report( 'the grid, and what a decal can have', Object.entries( q ).every( ( [ k, v ] ) => typeof v === 'string' || v === true ), q );
+
+	// ---- a decal with the bones of the mesh
+	const s2 = {};
+	{
+		const h = 20, g = new THREE.CylinderGeometry( 3, 3, h, 32, 16, true ), pa = g.attributes.position, si = [], sw = [];
+		for ( let i = 0; i < pa.count; i ++ ) { const w = ( pa.getY( i ) + h / 2 ) / h; si.push( 0, 1, 0, 0 ); sw.push( 1 - w, w, 0, 0 ); }
+		g.setAttribute( 'skinIndex', new THREE.Uint16BufferAttribute( si, 4 ) ); g.setAttribute( 'skinWeight', new THREE.Float32BufferAttribute( sw, 4 ) );
+		const b0 = new THREE.Bone(), b1 = new THREE.Bone(); b0.position.y = - h / 2; b1.position.y = h; b0.add( b1 );
+		const arm = new THREE.SkinnedMesh( g, new THREE.MeshBasicMaterial() ); arm.add( b0 ); arm.bind( new THREE.Skeleton( [ b0, b1 ] ) );
+		const holder = new THREE.Group(); holder.position.set( 4, 0, 0 ); holder.add( arm );
+		const pose = () => { holder.updateMatrixWorld( true ); arm.skeleton.update(); };
+		b1.rotation.z = .5; pose();
+		const at2 = [ new THREE.Vector3( 4, 2, 3 ), new THREE.Euler(), new THREE.Vector3( 4, 6, 4 ) ];
+		const worldDecal = new DecalGeometry( arm, ...at2 );
+		const skinGeometry2 = new DecalGeometry( arm, ...at2, { skin: true } );
+		const skinnedDecal = createSkinnedDecal( arm, skinGeometry2, new THREE.MeshBasicMaterial() );
+		pose();
+		const where2 = i => skinnedDecal.getVertexPosition( i, new THREE.Vector3() ).applyMatrix4( skinnedDecal.matrixWorld );
+		let apart2 = 0; for ( let i = 0; i < worldDecal.drawRange.count; i ++ ) apart2 = Math.max( apart2, where2( i ).distanceTo( V( worldDecal, 'position', i ) ) );
+		let weightSum = 0; for ( let i = 0; i < skinGeometry2.drawRange.count; i ++ ) { const w = V( skinGeometry2, 'skinWeight', i ); weightSum = Math.max( weightSum, Math.abs( w.x + w.y + w.z + w.w - 1 ) ); }
+		// the corners of the triangles are where they were. The vertices that the clipping made are very close: bones don't bend a straight edge into a straight edge
+		s2.sameWhereItWasCut = worldDecal.drawRange.count > 0 && skinGeometry2.drawRange.count === worldDecal.drawRange.count && apart2 < .05;
+		s2.apart = apart2;
+		s2.attributes = skinGeometry2.attributes.skinIndex.itemSize === 4 && skinGeometry2.attributes.skinIndex.array instanceof Uint16Array && weightSum < 1e-5 && skinnedDecal.isSkinnedMesh && skinnedDecal.skeleton === arm.skeleton && skinnedDecal.parent === arm;
+		// the arm bends another way: the decal is where the surface went
+		b1.rotation.z = - .9; b0.rotation.x = .4; pose();
+		const again = new DecalGeometry( arm, ...at2 );
+		// the same vertices of the mesh, at rest, taken to the new pose by hand
+		let off2 = 0; const rest = skinGeometry2.attributes.position, tmp = new THREE.Vector3();
+		for ( let i = 0; i < skinGeometry2.drawRange.count; i ++ ) { tmp.fromBufferAttribute( rest, i ); const wI = V( skinGeometry2, 'skinIndex', i ), wW = V( skinGeometry2, 'skinWeight', i ); const sum = new THREE.Vector3(); [ [ wI.x, wW.x ], [ wI.y, wW.y ], [ wI.z, wW.z ], [ wI.w, wW.w ] ].forEach( ( [ bi, bw ] ) => { if ( bw > 0 ) sum.addScaledVector( tmp.clone().applyMatrix4( arm.bindMatrix ).applyMatrix4( arm.skeleton.boneInverses[ bi ] ).applyMatrix4( arm.skeleton.bones[ bi ].matrixWorld ), bw ); } ); off2 = Math.max( off2, sum.distanceTo( where2( i ) ) ); }
+		s2.bendsWithTheMesh = off2 < 1e-4 && where2( 0 ).distanceTo( V( worldDecal, 'position', 0 ) ) > .05;
+		// on the surface still: as far from the axis of the tube as the tube is, where there is one bone only
+		s2.ignoredOnOtherMeshes = new DecalGeometry( ball, ...onTop, { skin: true } ).attributes.skinIndex === undefined;
+	}
+	report( 'decals with bones', Object.entries( s2 ).every( ( [ k, v ] ) => typeof v === 'number' || v === true ), s2 );
+
+	// ---- many decals in one geometry
+	const bt = {};
+	{
+		const batch = new DecalBatch( { capacity: 6 } );
+		const firstArray = batch.attributes.position.array;
+		const r1 = batch.add( plane, new THREE.Vector3( - 3, 0, 0 ), new THREE.Euler(), new THREE.Vector3( 2, 2, 1 ), { color: 0xff0000 } );
+		const r2 = batch.add( plane, new THREE.Vector3( 3, 0, 0 ), new THREE.Euler(), new THREE.Vector3( 2, 2, 1 ), { color: 0x0000ff } );
+		const r3 = batch.add( plane, new THREE.Vector3( 0, 3, 0 ), new THREE.Euler(), new THREE.Vector3( 1, 1, 1 ) );
+		bt.ranges = r1.start === 0 && r1.count > 0 && r2.start === r1.count && r3.start === r1.count + r2.count && batch.count === r1.count + r2.count + r3.count && batch.drawRange.count === batch.count;
+		bt.grew = batch.attributes.position.array !== firstArray && batch.attributes.position.count >= batch.count;
+		bt.colors = V( batch, 'color', 0 ).x === 1 && V( batch, 'color', 0 ).z === 0 && V( batch, 'color', r2.start ).z === 1 && V( batch, 'color', r2.start ).x === 0 && V( batch, 'color', r3.start ).y === 1 && V( batch, 'color', 0 ).w === 1;
+		bt.area = near( area( batch ), 4 + 4 + 1 );
+		bt.bounds = near( box( batch ).min.x, - 4 ) && near( box( batch ).max.x, 4 ) && near( box( batch ).max.y, 3.5 ) && near( batch.boundingBox.min.y, - 1 );
+		batch.computeBoundingSphere(); bt.sphere = batch.boundingSphere.radius > 3.5 && batch.boundingSphere.radius < 6;
+		const faded2 = new DecalBatch( { fade: true, tangents: true } ); faded2.add( ball, ...onTop );
+		bt.options = faded2.attributes.tangent !== undefined && faded2.count > 0 && ( () => { let m = 1; for ( let i = 0; i < faded2.count; i ++ ) m = Math.min( m, V( faded2, 'color', i ).w ); return m < .05; } )();
+		const sc3 = new THREE.Scene(); const cam3 = new THREE.OrthographicCamera( - 5, 5, 5, - 5, .1, 10 ); cam3.position.z = 5;
+		sc3.add( new THREE.Mesh( batch, new THREE.MeshBasicMaterial( { vertexColors: true } ) ) ); renderer2.render( sc3, cam3 );
+		const read = ( x, y ) => { const o = new Uint8Array( 4 ); renderer2.getContext().readPixels( x, y, 1, 1, 6408, 5121, o ); return [ ...o ].slice( 0, 3 ).join(); };
+		bt.oneDrawCall = renderer2.info.render.calls === 1 && read( 20, 50 ) === '255,0,0' && read( 80, 50 ) === '0,0,255' && read( 50, 80 ) === '255,255,255' && read( 50, 20 ) === '0,0,0';
+		batch.clear(); bt.clear = batch.count === 0 && batch.drawRange.count === 0;
+		batch.add( plane, new THREE.Vector3(), new THREE.Euler(), new THREE.Vector3( 2, 2, 1 ) ); bt.addAfterClear = near( area( batch ), 4 );
+	}
+	report( 'a batch of decals', Object.values( bt ).every( v => v === true ), bt );
+
+	// ---- meshes that move: the vertices are where three.js puts them
+	const d2 = {};
+	const everything = [ new THREE.Vector3(), new THREE.Euler(), new THREE.Vector3( 500, 500, 500 ) ];
+	const sameAsThree = ( mesh, geometry ) => { let worst = 0; const idx = mesh.geometry.index, v = new THREE.Vector3(); for ( let i = 0; i < geometry.drawRange.count; i ++ ) { mesh.getVertexPosition( idx ? idx.getX( i ) : i, v ).applyMatrix4( mesh.matrixWorld ); worst = Math.max( worst, v.distanceTo( V( geometry, 'position', i ) ) ); } return worst; };
+	{
+		// bones and morphs at the same time
+		const h = 20, g = new THREE.CylinderGeometry( 3, 3, h, 24, 12, true ), pa = g.attributes.position, si = [], sw = [], mo = [];
+		for ( let i = 0; i < pa.count; i ++ ) { const w = ( pa.getY( i ) + h / 2 ) / h; si.push( 0, 1, 2, 0 ); sw.push( ( 1 - w ) * .8, w * .8, .2, 0 ); mo.push( pa.getX( i ) * .5, 0, pa.getZ( i ) * .5 ); }
+		g.setAttribute( 'skinIndex', new THREE.Uint16BufferAttribute( si, 4 ) ); g.setAttribute( 'skinWeight', new THREE.Float32BufferAttribute( sw, 4 ) );
+		g.morphAttributes.position = [ new THREE.Float32BufferAttribute( mo, 3 ), new THREE.Float32BufferAttribute( mo.map( v => - v * .3 ), 3 ) ]; g.morphTargetsRelative = true;
+		const b0 = new THREE.Bone(), b1 = new THREE.Bone(), b2 = new THREE.Bone(); b0.position.y = - h / 2; b1.position.y = h / 2; b2.position.y = h / 2; b0.add( b1 ); b1.add( b2 );
+		const arm = new THREE.SkinnedMesh( g, new THREE.MeshBasicMaterial() ); arm.add( b0 ); arm.bind( new THREE.Skeleton( [ b0, b1, b2 ] ) );
+		const holder = new THREE.Group(); holder.position.set( 3, 1, - 2 ); holder.rotation.set( .2, .5, .1 ); holder.scale.setScalar( 1.5 ); holder.add( arm );
+		b1.rotation.z = .6; b2.rotation.x = - .4; b0.rotation.y = .3; arm.morphTargetInfluences[ 0 ] = .7; arm.morphTargetInfluences[ 1 ] = .4;
+		holder.updateMatrixWorld( true ); arm.skeleton.update();
+		const all = new DecalGeometry( arm, ...everything );
+		d2.bonesAndMorphs = all.drawRange.count === g.index.count && sameAsThree( arm, all ) < 1e-3;
+		d2.worst = sameAsThree( arm, all );
+
+		// decals with its bones and its morphs, and a batch with its bones, are where it is
+		const onIt = decalMesh => { let worst = 0; const v = new THREE.Vector3(), w = new THREE.Vector3(); holder.updateMatrixWorld( true ); for ( let i = 0; i < g.index.count; i ++ ) { arm.getVertexPosition( g.index.getX( i ), v ).applyMatrix4( arm.matrixWorld ); worst = Math.max( worst, v.distanceTo( decalMesh.getVertexPosition( i, w ).applyMatrix4( decalMesh.matrixWorld ) ) ); } return worst; };
+		const both = createDecal( arm, new DecalGeometry( arm, ...everything, { skin: true, morph: true } ), new THREE.MeshBasicMaterial() );
+		const b0a = onIt( both ); b1.rotation.z = - .3; arm.morphTargetInfluences[ 0 ] = .2; holder.updateMatrixWorld( true ); arm.skeleton.update();
+		d2.bonesAndMorphsDecal = both.isSkinnedMesh === true && both.geometry.morphAttributes.position.length === 2 && b0a < 1e-3 && onIt( both ) < 1e-3;
+		arm.morphTargetInfluences[ 0 ] = 0; arm.morphTargetInfluences[ 1 ] = 0;
+		const skinBatch = new DecalBatch( { skin: true } ); skinBatch.add( arm, ...everything );
+		const batchMesh = createDecal( arm, skinBatch, new THREE.MeshBasicMaterial( { vertexColors: true } ) );
+		b2.rotation.x = .5; holder.updateMatrixWorld( true ); arm.skeleton.update();
+		d2.batchWithBones = batchMesh.isSkinnedMesh === true && skinBatch.count === g.index.count && onIt( batchMesh ) < 1e-3;
+
+		// morphs that are not relative
+		const mg = new THREE.PlaneGeometry( 4, 4, 3, 3 ), mp = mg.attributes.position;
+		mg.morphAttributes.position = [ new THREE.Float32BufferAttribute( Array.from( { length: mp.count }, ( _, i ) => [ mp.getX( i ) * 2, mp.getY( i ), 3 ] ).flat(), 3 ) ];
+		const mm = new THREE.Mesh( mg ); mm.rotation.x = .4; mm.updateMatrixWorld(); mm.morphTargetInfluences[ 0 ] = .5;
+		d2.absoluteMorphs = sameAsThree( mm, new DecalGeometry( mm, ...everything ) ) < 1e-5;
+
+		// a decal of all of it, with morphs that are not relative, on a mesh that is turned and moves after
+		const allOfIt = new DecalGeometry( mm, ...everything, { morph: true } ), follower = createDecal( mm, allOfIt, new THREE.MeshBasicMaterial() );
+		const apartFrom = () => { let worst = 0; const v = new THREE.Vector3(); for ( let i = 0; i < allOfIt.drawRange.count; i ++ ) { mm.getVertexPosition( mg.index.getX( i ), v ).applyMatrix4( mm.matrixWorld ); worst = Math.max( worst, v.distanceTo( follower.getVertexPosition( i, new THREE.Vector3() ).applyMatrix4( follower.matrixWorld ) ) ); } return worst; };
+		mm.updateMatrixWorld( true ); const a5 = apartFrom();
+		mm.rotation.y = 1.3; mm.position.set( 3, - 2, 1 ); mm.morphTargetInfluences[ 0 ] = .9; mm.updateMatrixWorld( true );
+		d2.absoluteMorphDecal = allOfIt.drawRange.count === mg.index.count && allOfIt.morphTargetsRelative === false && a5 < 1e-5 && apartFrom() < 1e-5;
+
+		// a decal with the morphs of the mesh changes with it
+		const smooth = new THREE.Mesh( new THREE.SphereGeometry( 5, 32, 24 ) ), sp = smooth.geometry.attributes.position;
+		smooth.geometry.morphAttributes.position = [ new THREE.Float32BufferAttribute( Array.from( { length: sp.count }, ( _, i ) => [ sp.getX( i ) * .4, sp.getY( i ) * - .2, sp.getZ( i ) * .6 ] ).flat(), 3 ) ];
+		smooth.geometry.morphTargetsRelative = true; smooth.updateMorphTargets(); smooth.position.set( 1, 2, 3 ); smooth.updateMatrixWorld();
+		smooth.morphTargetInfluences[ 0 ] = .7;
+		const spot = [ new THREE.Vector3( 1, 2, 3 + 5 * 1.42 ), new THREE.Euler(), new THREE.Vector3( 4, 4, 6 ) ];
+		const worldCut = new DecalGeometry( smooth, ...spot );
+		const morphGeometry = new DecalGeometry( smooth, ...spot, { morph: true } );
+		const morphDecal = createDecal( smooth, morphGeometry, new THREE.MeshBasicMaterial() ); smooth.updateMatrixWorld( true );
+		const at3 = i => morphDecal.getVertexPosition( i, new THREE.Vector3() ).applyMatrix4( morphDecal.matrixWorld );
+		let apart3 = 0; for ( let i = 0; i < worldCut.drawRange.count; i ++ ) apart3 = Math.max( apart3, at3( i ).distanceTo( V( worldCut, 'position', i ) ) );
+		d2.morphDecalWhereItWasCut = worldCut.drawRange.count > 0 && morphGeometry.drawRange.count === worldCut.drawRange.count && apart3 < 1e-4 && morphGeometry.morphAttributes.position.length === 1 && morphGeometry.morphTargetsRelative === true && morphDecal.morphTargetInfluences === smooth.morphTargetInfluences && morphDecal.parent === smooth;
+		// with another amount of the morph, it's on the surface still: every vertex is the one of the mesh, or between them
+		smooth.morphTargetInfluences[ 0 ] = .1;
+		const whole = new DecalGeometry( smooth, ...everything, { morph: true } ), wholeDecal = createDecal( smooth, whole, new THREE.MeshBasicMaterial() ); smooth.updateMatrixWorld( true );
+		let apart4 = 0; { const idx = smooth.geometry.index, v = new THREE.Vector3(); for ( let i = 0; i < whole.drawRange.count; i ++ ) { smooth.getVertexPosition( idx.getX( i ), v ).applyMatrix4( smooth.matrixWorld ); apart4 = Math.max( apart4, v.distanceTo( wholeDecal.getVertexPosition( i, new THREE.Vector3() ).applyMatrix4( wholeDecal.matrixWorld ) ) ); } }
+		d2.morphDecalFollows = apart4 < 1e-4 && at3( 0 ).distanceTo( V( worldCut, 'position', 0 ) ) > .1;
+		// made again with other morphs: not the ones that three.js kept
+		const before = morphGeometry.morphAttributes.position[ 0 ];
+		morphGeometry.update( smooth, ...spot, { morph: true } );
+		d2.morphUpdate = morphGeometry.morphAttributes.position[ 0 ] !== before && morphGeometry.update( smooth, ...spot ).morphAttributes.position === undefined;
+	}
+	report( 'meshes that move, and decals that move with them', Object.entries( d2 ).every( ( [ k, v ] ) => typeof v === 'number' || v === true ), d2 );
+
+	// ---- several meshes, parts of a texture, and where a ray hits
+	const mm2 = {};
+	{
+		const left = new THREE.Mesh( new THREE.PlaneGeometry( 4, 4, 2, 2 ) ), right = new THREE.Mesh( new THREE.PlaneGeometry( 4, 4, 5, 5 ) );
+		left.position.x = - 2; right.position.x = 2; right.position.z = .5;
+		const group = new THREE.Group(); group.add( left, right ); group.position.y = 1; group.updateMatrixWorld( true );
+		const across = [ new THREE.Vector3( 0, 1, 0 ), new THREE.Euler(), new THREE.Vector3( 2, 2, 3 ) ];
+		const both2 = new DecalGeometry( group, ...across );
+		mm2.group = near( area( both2 ), 4 ) && near( box( both2 ).min.x, - 1 ) && near( box( both2 ).max.x, 1 ) && near( box( both2 ).max.z, .5 ) && near( box( both2 ).min.z, 0 );
+		mm2.list = near( area( new DecalGeometry( [ left, right ], ...across ) ), 4 ) && near( area( new DecalGeometry( [ left ], ...across ) ), 2 );
+		// the decals that are in the group are not cut
+		group.add( new THREE.Mesh( both2 ) ); const hidden = new THREE.Mesh( new THREE.PlaneGeometry( 9, 9 ) ); hidden.visible = false; group.add( hidden ); group.updateMatrixWorld( true );
+		mm2.leavesDecalsAndHiddenOut = near( area( new DecalGeometry( group, ...across ) ), 4 );
+		const ixm = new DecalGeometry( group, ...across, { indexed: true, local: true } );
+		let okIndex = true; for ( let i = 0; i < ixm.drawRange.count; i ++ ) if ( ixm.index.getX( i ) >= ixm._vertices ) okIndex = false;
+		mm2.indexedAndInTheWorld = ixm.index !== null && okIndex && near( area( ixm ), 4 ) && near( box( ixm ).max.z, .5 ) && near( box( ixm ).min.y, 0 );
+		mm2.nothingToCut = outcome( () => new DecalGeometry( new THREE.Group(), ...across ) ) === 'TypeError' && outcome( () => new DecalGeometry( [], ...across ) ) === 'TypeError';
+
+		// a part of the texture
+		const part = new DecalGeometry( plane, new THREE.Vector3(), new THREE.Euler(), new THREE.Vector3( 2, 2, 1 ), { uvRect: [ .5, 0, 1, .25 ] } );
+		mm2.uvRect = range( part, 'uv', 0 ).map( v => Math.round( v * 1e5 ) / 1e5 ).join() === '0.5,1' && range( part, 'uv', 1 ).map( v => Math.round( v * 1e5 ) / 1e5 ).join() === '0,0.25' && uvAt( part, - 1, - 1 ) === '0.5,0' && uvAt( part, 1, 1 ) === '1,0.25';
+
+		// where a ray hits
+		const wall = new THREE.Mesh( new THREE.SphereGeometry( 5, 48, 32 ) ); wall.position.set( 2, 0, 0 ); wall.rotation.set( .5, .3, 0 ); wall.scale.set( 1, 2, 1 ); wall.updateMatrixWorld();
+		const rc = new THREE.Raycaster( new THREE.Vector3( 30, 12, 20 ), new THREE.Vector3( 2, 1, 0 ).sub( new THREE.Vector3( 30, 12, 20 ) ).normalize() );
+		const hit = rc.intersectObject( wall )[ 0 ];
+		const fromHit = DecalGeometry.fromIntersection( hit, 2, { maxAngle: 90 } );
+		const bx = boxFromIntersection( hit, new THREE.Vector3( 1, 2, 3 ), .5 );
+		const centre = box( fromHit ).getCenter( new THREE.Vector3() );
+		const worldNormal = hit.face.normal.clone().applyNormalMatrix( new THREE.Matrix3().getNormalMatrix( wall.matrixWorld ) ).normalize();
+		const zOf = e => new THREE.Vector3( 0, 0, 1 ).applyEuler( e );
+		mm2.fromIntersection = fromHit.drawRange.count > 0 && centre.distanceTo( hit.point ) < .5 && bx.mesh === wall && bx.position.distanceTo( hit.point ) === 0 && bx.dimensions.z === 3 && zOf( bx.rotation ).distanceTo( worldNormal ) < 1e-5 && zOf( boxFromIntersection( hit, 2, 0 ).rotation ).distanceTo( worldNormal ) < 1e-5;
+		const turned = DecalGeometry.fromIntersection( hit, 2, { angle: Math.PI / 2 } ), straight = DecalGeometry.fromIntersection( hit, 2 );
+		mm2.angle = near( area( turned ), area( straight ), 1e-3 ) && Math.abs( V( turned, 'uv', 0 ).x - V( straight, 'uv', 0 ).x ) > 1e-3;
+		// straight down, where there is no up to turn around
+		const floor = new THREE.Mesh( new THREE.PlaneGeometry( 10, 10 ) ); floor.rotation.x = - Math.PI / 2; floor.updateMatrixWorld();
+		const down = new THREE.Raycaster( new THREE.Vector3( 1, 5, 1 ), new THREE.Vector3( 0, - 1, 0 ) ).intersectObject( floor )[ 0 ];
+		const onFloor = DecalGeometry.fromIntersection( down, 2 );
+		mm2.onTheFloor = near( area( onFloor ), 4 ) && near( box( onFloor ).min.y, 0 ) && near( box( onFloor ).max.x, 2 );
+		// the one of an InstancedMesh that was hit, and another thing than what was hit
+		const many = new THREE.InstancedMesh( new THREE.PlaneGeometry( 2, 2 ), new THREE.MeshBasicMaterial(), 3 );
+		[ 0, 20, 40 ].forEach( ( x, i ) => many.setMatrixAt( i, new THREE.Matrix4().makeTranslation( x, 0, 0 ) ) ); many.updateMatrixWorld(); many.computeBoundingSphere();
+		const ih = new THREE.Raycaster( new THREE.Vector3( 20.2, .1, 5 ), new THREE.Vector3( 0, 0, - 1 ) ).intersectObject( many )[ 0 ];
+		const onInstance = DecalGeometry.fromIntersection( ih, 1 );
+		mm2.instanceThatWasHit = ih.instanceId === 1 && near( area( onInstance ), 1 ) && near( box( onInstance ).min.x, 19.7 );
+		const lh = new THREE.Raycaster( new THREE.Vector3( - .2, 1.2, 5 ), new THREE.Vector3( 0, 0, - 1 ) ).intersectObjects( [ left, right ] )[ 0 ];
+		mm2.target = lh.object === left && near( area( DecalGeometry.fromIntersection( lh, new THREE.Vector3( 2, 2, 3 ) ) ), 2.4 ) && near( area( DecalGeometry.fromIntersection( lh, new THREE.Vector3( 2, 2, 3 ), { target: group } ) ), 4 );
+	}
+	report( 'several meshes, parts of a texture, and rays', Object.values( mm2 ).every( v => v === true ), mm2 );
+
+	// ---- a batch that takes decals out, has a limit, and lets them go with time
+	const b2 = {};
+	{
+		const stamp = ( batch, x, size = 2, extra = {} ) => batch.add( plane, new THREE.Vector3( x, 0, 0 ), new THREE.Euler(), new THREE.Vector3( size, size, 1 ), extra );
+		const batch = new DecalBatch();
+		const a1 = stamp( batch, - 3 ), a2 = stamp( batch, 0 ), a3 = stamp( batch, 3 );
+		const full = area( batch );
+		batch.remove( a2 );
+		b2.remove = batch.decals.length === 2 && ! batch.decals.includes( a2 ) && near( area( batch ), full - 4 ) && near( box( batch ).min.x, - 4 ) && near( box( batch ).max.x, 4 );
+		batch.computeBoundingBox(); const gap = stamp( batch, 0 );
+		b2.holeIsUsedAgain = gap.start === a2.start && gap.count === a2.count && near( area( batch ), full ) && batch.count === a1.count + a2.count + a3.count;
+		batch.remove( a3 ); batch.remove( gap );
+		b2.endIsGivenBack = batch.count === a1.count && batch.drawRange.count === a1.count;
+		b2.removeTwice = ( batch.remove( a3 ), batch.decals.length === 1 );
+		b2.nothingToAdd = batch.add( plane, new THREE.Vector3( 500, 0, 0 ), new THREE.Euler(), new THREE.Vector3( 1, 1, 1 ) ) === null && batch.decals.length === 1;
+
+		// only what changed is sent, where three.js can
+		const fresh = new DecalBatch( { capacity: 4096 } ); stamp( fresh, - 3 );
+		const freshScene = new THREE.Scene().add( new THREE.Mesh( fresh, new THREE.MeshBasicMaterial( { vertexColors: true } ) ) );
+		renderer2.render( freshScene, cam2 ); stamp( fresh, 0 ); renderer2.render( freshScene, cam2 );
+		const second = stamp( fresh, 3 ), ranges = fresh.attributes.position.updateRanges;
+		b2.partialUpload = Array.isArray( ranges ) && ranges.length === 1 && ranges[ 0 ].start === second.start * 3 && ranges[ 0 ].count === second.count * 3 && fresh.attributes.uv.updateRanges[ 0 ].start === second.start * 2;
+
+		// a limit: the oldest make room
+		const one = a1.count, limited = new DecalBatch( { maxVertices: one * 3 } );
+		const l = [ - 4, - 2, 0, 2, 4 ].map( x => stamp( limited, x, 1.5 ) );
+		b2.limit = limited.count <= one * 3 && limited.attributes.position.count === one * 3 && limited.decals.length === 3 && ! limited.decals.includes( l[ 0 ] ) && ! limited.decals.includes( l[ 1 ] ) && limited.decals.includes( l[ 4 ] ) && near( area( limited ), 3 * 2.25 ) && near( box( limited ).min.x, - .75 );
+		b2.tooBigForIt = new DecalBatch( { maxVertices: 3 } ).add( plane, new THREE.Vector3(), new THREE.Euler(), new THREE.Vector3( 8, 8, 1 ) ) === null;
+		const mixed = new DecalBatch( { maxVertices: one * 2 } ); stamp( mixed, - 3, 1 ); stamp( mixed, 0, 1 ); const big2 = stamp( mixed, 3, 2 );
+		b2.limitWithOtherSizes = big2 !== null && mixed.count <= one * 2 && mixed.decals.includes( big2 ) && near( area( mixed ), 4 + ( mixed.decals.length - 1 ) );
+
+		// they go away with time
+		const timed = new DecalBatch( { lifetime: 10, fadeTime: 2 } );
+		const t1 = stamp( timed, - 3, 2, { time: 0 } ), t2 = stamp( timed, 3, 2, { time: 5 } );
+		timed.update( 8 ); const alphaAt = ( d ) => V( timed, 'color', d.start ).w;
+		const s8 = [ alphaAt( t1 ), alphaAt( t2 ), timed.decals.length ];
+		timed.update( 9 ); const s9 = [ alphaAt( t1 ), t1.opacity ];
+		timed.update( 10.5 ); const s10 = [ timed.decals.length, timed.decals[ 0 ] === t2, alphaAt( t2 ) ];
+		timed.update( 14 ); timed.update( 16 );
+		b2.lifetime = s8.join() === '1,1,2' && near( s9[ 0 ], .5 ) && s9[ 1 ] === .5 && s10.join() === '1,true,1' && timed.decals.length === 0 && timed.count === 0;
+		const op = new DecalBatch(); const o1 = stamp( op, 0, 2, { fade: { depth: .9 } } );
+		op.setOpacity( o1, .25 ); b2.setOpacity = o1.opacity === .25 && near( V( op, 'color', o1.start ).w, op._alpha[ o1.start ] * .25 ) && ( op.setOpacity( o1, 1 ), near( V( op, 'color', o1.start ).w, op._alpha[ o1.start ] ) );
+
+		// where a ray hits
+		const rb = new DecalBatch();
+		const bh = new THREE.Raycaster( new THREE.Vector3( 1, 1, 5 ), new THREE.Vector3( 0, 0, - 1 ) ).intersectObject( plane )[ 0 ];
+		const added = rb.addFromIntersection( bh, 2, { color: 0x00ff00 } );
+		b2.addFromIntersection = added !== null && near( area( rb ), 4 ) && near( box( rb ).min.x, 0 ) && V( rb, 'color', 0 ).y === 1;
+
+		// of one mesh, in its coordinates
+		const mover = new THREE.Mesh( new THREE.PlaneGeometry( 10, 10, 4, 4 ) ); mover.position.set( 20, 0, 0 ); mover.rotation.y = .5; mover.updateMatrixWorld();
+		const lb = new DecalBatch( { local: true } );
+		lb.add( mover, new THREE.Vector3( 20, 0, 0 ), new THREE.Euler( 0, .5, 0 ), new THREE.Vector3( 2, 2, 2 ) );
+		b2.local = near( area( lb ), 4 ) && near( box( lb ).max.x, 1 ) && near( box( lb ).min.x, - 1 ) && near( box( lb ).max.z, 0 ) && outcome( () => lb.add( plane, new THREE.Vector3(), new THREE.Euler(), new THREE.Vector3( 1, 1, 1 ) ) ) === 'Error';
+		lb.clear(); b2.clearFreesTheMesh = outcome( () => lb.add( plane, new THREE.Vector3(), new THREE.Euler(), new THREE.Vector3( 1, 1, 1 ) ) ) === 'no error';
+	}
+	report( 'a batch with a limit, removal and time', Object.values( b2 ).every( v => v === true ), b2 );
+
+	// ---- the grid ahead of time
+	const g2 = {};
+	{
+		const heavy = new THREE.Mesh( new THREE.TorusKnotGeometry( 10, 3, 400, 60 ) ); heavy.updateMatrixWorld();
+		const where5 = [ new THREE.Vector3( 13, 0, 0 ), new THREE.Euler( 0, 1, 0 ), new THREE.Vector3( 5, 5, 5 ) ];
+		const reference = new DecalGeometry( heavy, ...where5, { grid: false } );
+		const copy = new THREE.Mesh( heavy.geometry.clone() ); copy.updateMatrixWorld();
+		const t0 = performance.now(); await prepareAsync( copy ); g2.asyncMs = Math.round( performance.now() - t0 );
+		const t1 = performance.now(); const after = new DecalGeometry( copy, ...where5 ); g2.firstDecalAfterMs = Math.round( ( performance.now() - t1 ) * 10 ) / 10;
+		g2.prepareAsync = after.drawRange.count === reference.drawRange.count && near( area( after ), area( reference ), 1e-6 ) && g2.firstDecalAfterMs < 20;
+		const copy2 = new THREE.Mesh( heavy.geometry.clone() ); copy2.updateMatrixWorld();
+		const t2 = performance.now(); prepare( copy2 ); g2.prepareMs = Math.round( performance.now() - t2 );
+		const t3 = performance.now(); const after2 = new DecalGeometry( copy2, ...where5 ); const first2 = performance.now() - t3;
+		g2.prepare = after2.drawRange.count === reference.drawRange.count && first2 < 20;
+		g2.prepareAnything = ( prepare( new THREE.Group().add( copy2, new THREE.Mesh( after2 ) ) ), prepare( copy2.geometry ), prepare( [ copy, copy2 ] ), true ) && ( await prepareAsync( new THREE.Group() ) ).length === 0;
+	}
+	report( 'the grid, ahead of time', Object.entries( g2 ).every( ( [ k, v ] ) => typeof v === 'number' || v === true ), g2 );
 } catch ( e ) { report( 'threw', false, String( e.stack ) ); }
 console.log( 'TESTS-DONE' );
 </script></body></html>
