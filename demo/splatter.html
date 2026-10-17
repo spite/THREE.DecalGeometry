@@ -177,8 +177,7 @@ const decalMaterial = new THREE.MeshPhongMaterial( {
 	vertexColors: true
 } );
 
-// every splat goes into one geometry, with its color in its vertices: they are all drawn at once.
-// It has a limit, and when it's full the oldest splats make room for the new ones
+// every splat in one geometry, drawn at once: when it's full, the oldest splats make room for the new ones
 const MAX_TRIANGLES = 60000;
 const batch = new DecalBatch( { tangents: true, maxVertices: MAX_TRIANGLES * 3 } );
 
@@ -236,8 +235,7 @@ let hit = null;
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
-// an arrow that points at where the pointer is on the mesh, along the way the surface looks there.
-// Its tip is at the origin and it goes along z, which is where lookAt() points an object
+// an arrow to where the pointer is, along the normal there: its tip is at the origin and it points along z, as lookAt() expects
 const arrowMaterial = new THREE.MeshPhongMaterial( { color: 0xffffff, emissive: 0x555555 } );
 const arrow = new THREE.Group();
 arrow.add(

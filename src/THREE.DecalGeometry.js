@@ -43,8 +43,7 @@ const _helper = new Object3D();
 // what each bone does to a vertex, all the way to the box: 16 numbers for each
 let _boneMatrices = new Float64Array( 0 );
 
-// A vertex of what is being clipped is 10 numbers: its position in the box, its normal, how much it faces the decal,
-// and how much of each corner of the triangle it is. A triangle clipped by 6 planes has 9 of them at most
+// a vertex being clipped: its position in the box, its normal, how much it faces the decal, and its weight for each corner
 const STRIDE = 10;
 let _polygon = new Float64Array( 12 * STRIDE );
 let _clipped = new Float64Array( 12 * STRIDE );
@@ -418,20 +417,7 @@ function mixBones( skinIndex, skinWeight, ids, weights, target, at ) {
 
 }
 
-// Cuts the decal into _out, and says which attributes it has. The options:
-// - check: the sides of the box that clip the mesh, a Vector3 of 1 or 0 for each pair
-// - maxAngle: how far from facing the decal a triangle can be, in degrees
-// - local: the decal in the coordinates of the mesh, to add it to the mesh and have it follow it
-// - skin: the decal with the bones of a SkinnedMesh, to bend with it
-// - morph: the decal with the morphs of the mesh, to change with it
-// - instanceId: which one, of an InstancedMesh
-// - fade: the edges of the decal fade away, where it goes deep and where it turns away. In the alpha of its colors
-// - color: the color of its vertices
-// - offset: how far from the surface, along the normals
-// - tangents: with tangents, for normal maps
-// - indexed: the vertices that the triangles share are there once
-// - uvRect: the part of the texture that the decal shows, as [ u0, v0, u1, v1 ]
-// - grid: false to look at every triangle of the mesh
+// cuts the decal into _out and says which attributes it has, with the options of DecalOptions in the .d.ts
 function cut( target, position, rotation, dimensions, check, options, forceColor ) {
 
 	if ( check !== null && check !== undefined && check.isVector3 !== true ) {
@@ -890,8 +876,7 @@ function cutMesh( mesh, position, rotation, dimensions, check, options, local, s
 
 }
 
-// The box of a decal where a ray hit: at the point, looking out of the surface. size is a number or a Vector3,
-// and angle how much it's turned around the way it looks. Returns { mesh, position, rotation, dimensions, instanceId }
+// the box of a decal where a ray hit, looking out of the surface and turned by angle around that
 function boxFromIntersection( hit, size = 1, angle = 0 ) {
 
 	const object = hit.object;
@@ -978,9 +963,7 @@ function hitArguments( hit, size, options = {} ) {
 
 }
 
-// The part of a mesh that is inside a box, to draw something over it.
-// position, rotation and dimensions are the ones of the box, in the world. The decal looks along the z of the box:
-// its x and y are the ones of the texture, and its z how deep it goes
+// the part of a mesh inside a box, to draw over it: the decal looks along the z of the box, with the texture on its x and y
 class DecalGeometry extends BufferGeometry {
 
 	constructor( mesh, position, rotation, dimensions, check, options ) {
@@ -999,8 +982,7 @@ class DecalGeometry extends BufferGeometry {
 
 	}
 
-	// A decal where a ray hit, from what a Raycaster returns. size is a number or a Vector3. The options are the ones
-	// of a decal, and angle, how much it's turned, and target, to cut something else than what was hit, like its group
+	// a decal where a Raycaster hit; the options also take angle, and target to cut something other than what was hit
 	static fromIntersection( hit, size, options ) {
 
 		return new DecalGeometry( ...hitArguments( hit, size, options ) );
@@ -1014,8 +996,7 @@ class DecalGeometry extends BufferGeometry {
 		const names = out.attributes;
 		const morphs = this.morphAttributes.position;
 
-		// The attributes are made again only when the decal is of another kind, or doesn't fit in the ones there are.
-		// With morphs, always: what three.js keeps of them is of the geometry as it was
+		// remade for another kind of decal or one that doesn't fit, and always with morphs, which three.js caches by geometry
 		const same = Object.keys( this.attributes ).join() === names.join() && ( this.index !== null ) === out.indexed && out.morphCount === 0 && morphs === undefined;
 
 		if ( ! same || out.vertices > this._capacity || out.indices > this._indexCapacity ) {
@@ -1082,12 +1063,7 @@ class DecalGeometry extends BufferGeometry {
 
 }
 
-// Many decals in one geometry, to draw them all at once. Each one has its color, in the colors of the vertices,
-// so the material needs vertexColors, and transparent if they fade. Its options are the ones of every decal, and:
-// - capacity: the vertices to make room for at first
-// - maxVertices: the most that it can have. When it's full, the oldest decals make room for the new ones
-// - lifetime: the seconds that a decal lasts, and fadeTime, the ones that it takes to go away, with update()
-// - local, or skin: all the decals are of one mesh, in its coordinates or with its bones, to add the batch to it
+// many decals in one geometry, drawn at once, each with its color in the vertex colors, so the material needs vertexColors
 class DecalBatch extends BufferGeometry {
 
 	constructor( options = {} ) {
@@ -1348,8 +1324,7 @@ class DecalBatch extends BufferGeometry {
 
 }
 
-// A mesh for a decal that moves as another does: with its skeleton if the geometry was made with skin, and with its
-// morphs if it was made with morph. It's added to the mesh
+// a mesh for a decal that moves with another, by its skeleton or morphs when the decal was made with skin or morph, added to it
 function createDecal( mesh, geometry, material ) {
 
 	const skinned = geometry.attributes.skinIndex !== undefined && mesh.isSkinnedMesh === true;
